@@ -1,0 +1,13 @@
+# Git
+.git
+.gitignore
+
+# VS Code
+.vscode
+
+# Docker
+Dockerfile
+docker-compose.yml
+
+# NPM dependencies
+node_modules

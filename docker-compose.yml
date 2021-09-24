@@ -1,0 +1,21 @@
+version: '3'
+
+services:
+  api: 
+    build: .
+    ports:
+      - "5000:5000"
+      - "3210:3210"
+    volumes: 
+      - "./:/usr/src/app"
+#       - "reserved:/usr/src/app/node_modules"
+    # extra_hosts: 
+    #     - "myhostname:192.168.101.250"
+    # networks: 
+    #     - host
+# volumes:
+#   reserved:
+
+# networks: 
+#   host:
+  
