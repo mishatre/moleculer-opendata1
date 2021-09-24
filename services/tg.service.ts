@@ -15,8 +15,8 @@ import { TelegramService } from '@d0whc3r/moleculer-telegram';
 	 */
     settings: {
         $secureSettings: ["telegramToken", "telegramChannel"],
-        telegramToken: "1947418987:AAGhbq8RCBq2E1A0SUQKyMWs_W8zMywuudw",
-        telegramChannel: '-539754824',
+        telegramToken: "",
+        telegramChannel: '',
     },
 
 })
