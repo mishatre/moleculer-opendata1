@@ -1,87 +1,30 @@
 
 import { Service as MoleculerService, Context, Errors } from 'moleculer';
-import { Action, Service } from 'moleculer-decorators';
+import { Action, Event, Method, Service } from 'moleculer-decorators';
 import path from 'path';
 import fs from 'fs';
+import { URL } from 'url';
 import axios from 'axios';
-import csvParseSync from 'csv-parse/lib/sync';
-import ODCatalog from './opendata.catalog.json';
 
+import MatcherStream from '../src/matcher-stream';
+import ArrayJSONStream from '../src/array-json-stream';
+import { parse as parseXML } from 'fast-xml-parser';
+import { ServerResponse } from 'http';
 
 import parse from 'csv-parse';
-import { PassThrough, Readable, Transform } from 'stream';
-import { pipeline } from 'stream/promises';
+import { PassThrough, Duplex, Readable, Writable, Transform, PipelineOptions } from 'stream';
+import { pipeline, finished } from 'stream/promises';
 import iconvLite from 'iconv-lite';
 import unzip, { Entry } from 'unzip-stream';
+import zlib from 'zlib';
+import urljoin from 'url-join';
 
+import bench from '../src/bench-stream';
 
+function includes<T extends U, U>(coll: ReadonlyArray<T>, el: U): el is T {
+    return coll.includes(el as T);
+}
 // import type { Errors: { MoleculerRetryableError } } from 'moleculer';
-
-interface MedproductsRecord {
-    unique_number: string;
-    registration_number: string;
-    registration_date: string;
-    registration_date_end: string;
-    name: string;
-    applicant: string;
-    applicant_address_post: string;
-    applicant_address_legal: string;
-    producer: string;
-    producer_address_post: string;
-    producer_address_legal: string;
-    okp: string;
-    class: string;
-    appointment: string;
-    kind: string;
-    address_production: string;
-    details: string;
-}
-
-interface OpenDataCatalog {
-    [key: string]: any;
-}
-
-interface CatalogRecord {
-    name: string;
-    url: string;
-    meta: string;
-    meta_type: string;
-}
-
-interface CatalogMeta {
-    id: string;
-    title: string;
-    subject: string;
-    description: string;
-    creator: Date;
-    format: 'CSV' | 'XML';
-    created: Date;
-    modified: Date;
-    validBefore: Date;
-    structure: {
-        name: string;
-        url: string;
-    };
-    current: string;
-    previous: {
-
-    }[]
-}
-
-
-interface ClassificatorInfo {
-    id: string;
-    name: string;
-    description: string;
-    meta_url: string;
-    meta_type: string;
-    created: Date,
-    modified: Date,
-    valid: Date,
-    format: string;
-    structure_url: string;
-    data_url: string;
-}
 
 type PropertyValues = 'standardversion' | 
 'identifier' | 
@@ -105,25 +48,6 @@ type RawClassificatorInfo = {
     value: string
 };
 
-interface Category {
-    name: string;
-    classificators: {
-        [key: string]: {
-            id: string;
-            name: string;
-            meta_url: string;
-            meta_type: string;
-
-            description: string;
-            format: string;
-            created: string;
-            modified: string;
-            valid: string;
-            structure_url: string;
-            data_url: string;
-        }
-    }
-}
 
 class ODCatalogNotFound extends Errors.MoleculerError {
     constructor(data?: unknown) {
@@ -134,8 +58,8 @@ class ODCatalogNotFound extends Errors.MoleculerError {
 const formatDate = (dateString: string) => {
     return new Date(
         Number(dateString.substr(0, 4)),
-        Number(dateString.substr(5, 2)), 
-        Number(dateString.substr(8, 2))
+        Number(dateString.substr(4, 2)), 
+        Number(dateString.substr(6, 2))
     );
 };
 
@@ -143,13 +67,104 @@ const delay = (time: number) => new Promise(resolve => setTimeout(resolve, time)
 
 // META_URL: "https://roszdravnadzor.gov.ru/opendata/7710537160-medproducts/meta.csv"
 
+type SupportedFileFormats = 'csv' | 'xml';
+
+interface FetchDataOptions {
+    sleep?: number;
+    cache?: boolean;
+    compress?: boolean;
+}
+
+interface OpendataCSVList {
+    property: string; 
+    title: string; 
+    value: string; 
+    format: 'csv' | 'xml';
+}
+
+interface OpendataCatalog {
+    name: string;
+    base_url: string;
+    list: {
+        name: string;
+        format: SupportedFileFormats;
+    };
+    classificators: {
+        [key: string]: OpendataClassificator;
+    }
+}
+
+interface OpendataClassificator {
+    name: string;
+    title: string;
+    description: string;
+    subject: string;
+    format: SupportedFileFormats;
+    created: Date | null;
+    modified: Date | null;
+    valid: Date | null;
+    meta: {
+        name: string;
+        format: SupportedFileFormats;
+    },
+    structure: null | {
+        name: string;
+        format: SupportedFileFormats;
+        fields: {
+            [key: string]: any    
+        },
+        previous: string[];
+    },
+    data: null | {
+        name: string;
+        format: SupportedFileFormats;
+        archive: boolean,
+        previous: string[];
+    }
+}
+
+interface OpenDataDatabase {
+    [key: string]: OpendataCatalog;
+}
+
+interface OpendataListItem {
+    name: string;
+    url: string;
+}
+
+interface OpendataSettings {
+    bucketName?: string;
+    compressFiles?: boolean | 'gzip' | 'brotli';
+
+    opendataItems: OpendataListItem[];
+}
+
+interface RRequestCatalogData {
+    catalog: string; 
+    classificator: string;
+    $req: any;
+    $res: ServerResponse;
+}
+
+interface RRequestCatalogDataMeta {
+    $responseType: string, 
+    $responseHeaders: any, 
+    $streamObjectMode: boolean
+}
+
 @Service({
     name: 'opendata',
     version: 1,
 
+    dependencies: ['s3'],
+
     settings: {
 
-        initialList: [
+        compressFiles: true,
+
+        bucketName: 'opendata',
+
+        opendataItems: [
             {   
                 name: "roszdravnadzor",
                 url: "https://roszdravnadzor.gov.ru/opendata/list.csv"
@@ -159,598 +174,770 @@ const delay = (time: number) => new Promise(resolve => setTimeout(resolve, time)
     }
 
 })
-export default class OpenDataService extends MoleculerService {
+export default class OpenDataService extends MoleculerService<OpendataSettings> {
+
+    private database: OpenDataDatabase = {};
+
+    @Event({
+        name: 'requestCatalog',
+        params: {
+            catalog: 'string',
+            classificator: 'string',
+        }
+    })
+    private async event_requestCatalog(ctx: any) {
+
+        const { catalog, classificator } = ctx.params;
+
+    }
+
+    @Action()
+    public async getCatalogList() {}
+
+    @Action({
+        rest: {
+            method: 'GET',
+            path: '/:catalog/:classificator'
+        },
+        params: {
+            catalog: 'string',
+            classificator: 'string',
+        },
+        visibility: 'published'    
+    })
+    public async getCatalogInfo(ctx: any) {
+
+        let autoload = true;
+
+        const { catalog, classificator } = ctx.params;
+
+        const metadata = await this.broker.call('opendata.getCatalogMetadata', {
+            catalog,
+            classificator,
+        }) as {};
+
+        let status = await this.broker.call('opendata.getCatalogQueryStatus', {
+            catalog,
+            classificator,
+        }) as 'not_loaded' | 'pending' | 'loading' | 'invalidated' | 'ready';
+
+        if(status === 'not_loaded' && autoload) {
+            this.broker.emit('requestCatalog', {
+                catalog,
+                classificator,
+            });
+            status = 'loading';
+        }
+
+        return {
+            ...metadata,
+            status,
+        };
+
+    }
+
+    // private async loadCatalogData(catalog : string, classificator: string) {
+
+    //     const metadata = await this.broker.call('opendata.getCatalogMetadata', { catalog, classificator }) as any;
+
+    //     if(!metadata) {
+    //         throw new Error('Classificator is not in database');
+    //     }
+
+    //     if(metadata.valid && metadata.valid <= new Date) {
+    //         // refetch metadata
+    //     }
+
+    //     this.logger.info('Fetching classificator')
+    //     const fileStream = await this.fetchOpendataFile(catalog, 'data', metadata.name);
+
+    //     if(!fileStream) {
+    //         return null;
+    //     }
+        
+    //     const output = new PassThrough();
+
+    //     this.putFile()
+
+    //     try {
+    //         await this.buildPipeline({
+    //             input: fileStream,
+    //             output: res,
+    //             format: metadata.data!.format,
+    //             compress: true,
+    //         });
+    //         console.log('Am i here?')
+    //     } catch(error) {
+    //         console.log(error);
+    //     }
+
+    // }
 
     // @Action({
-    //     name: 'loadOpenData',
     //     params: {
-    //         opendataCatalog: 'string', 
-    //     }   
+    //         catalog: 'string',
+    //         classificator: 'string',
+    //         // request catalog even if it is already in database and current date < "valid" date
+    //         force: 'boolean',
+    //     }
     // })
-    // public async loadOpenData(ctx: Context<{ opendataCatalog: string }>) {
+    // public async requestCatalogLoading(ctx: any) {
 
-    //     const catalog = ctx.params.opendataCatalog;
+    //     const { catalog, classificator, force } = ctx.params;
 
-    //     const catalogInfo = this.findCatalogInfo(catalog);
+    //     const status = await this.getCatalogStatus(catalog, classificator);
 
-    //     if(!catalogInfo) {
-    //         throw new ODCatalogNotFound();
+    //     if (status === 'ready' && force !== true) {
+    //         return {
+    //             result: 'already_loaded',
+    //         };
     //     }
 
-    //     return await this.getCatalogMetaInfo(catalogInfo)
+    //     // Create loading task
 
+    //     return {
+    //         result: 'task_created'
+    //     }
 
     // }
 
-    // private async fetchData(catalog: OpenDataCatalog) {
+    // @Action({})
+    // public async getCatalogMetadata(ctx: any) {
 
-    //     // const response = await axios.get('https://roszdravnadzor.gov.ru/opendata/7710537160-medproducts/data-20210919-structure-20150601.zip', {
-    //     //     responseType: 'stream',
-    //     // });
+    //     const { catalog, classificator } = ctx.params;
 
-    //     const response = {
-    //         data: fs.createReadStream('./data.zip')
+    //     const metadata = this.database[catalog]?.classificators[classificator];
+
+    //     if(!metadata) {
+    //         return null;
     //     }
 
-    //     const parser = parse({
-    //         columns: true,
-    //         autoParseDate: true,
-    //         delimiter: ';',
-    //         relax: true,
+    //     return {
+    //         catalog,
+    //         ...metadata,            
+    //     }
+
+    // }
+
+    // // @Action({})
+    // // public async getCatalogData(ctx: any) {
+
+    // // }
+
+    // @Action({})
+    // public async getCatalogQueryStatus(ctx: any) {
+    //     return 'loading';
+    // }
+
+    // @Action({
+    //     name: 'requestCatalogData',
+    //     rest: {
+    //         method: 'GET',
+    //         path: '/:catalog/:classificator',
+    //         // @ts-ignore
+    //         passReqResToParams: true,
+    //     },
+    //     visibility: 'published',
+    //     timeout: 60000,
+    // })
+    // public async requestCatalogData(ctx: Context<RRequestCatalogData, RRequestCatalogDataMeta>) {
+
+    //     ctx.meta.$responseType = 'application/octet-stream';
+    //     ctx.meta.$responseHeaders = {
+    //         'Content-Encoding': 'gzip',
+    //     };
+    //     ctx.meta.$streamObjectMode = true
+
+    //     await this.getCatalogData(ctx.params.$res, ctx.params.catalog, ctx.params.classificator);
+
+    // }
+
+    // @Method
+    // public async getCatalogData(res: ServerResponse, catalogName: string, classificator: string) {
+
+    //     const catalog = this.database[catalogName];
+
+    //     if(!catalog) {
+    //         throw new Error('Catalog is not in database');
+    //     }
+
+    //     const metadata = catalog.classificators[classificator];
+
+    //     if(!metadata) {
+    //         throw new Error('Classificator is not in database');
+    //     }
+
+    //     if(metadata.valid && metadata.valid <= new Date) {
+    //         // refetch metadata
+    //     }
+
+    //     // const structureStream = await this.fetchStructure(catalog, classificator, metaInfo.structure_url, metaInfo.format);
+
+    //     this.logger.info('Fetching classificator')
+    //     const fileStream = await this.fetchOpendataFile(catalog, 'data', metadata.name);
+
+    //     if(!fileStream) {
+    //         return null;
+    //     }
+        
+    //     const ac = new AbortController();
+
+    //     res.on('close', () => {
+    //         res.end();
+    //         console.log('response close')
     //     });
 
-    //     await pipeline(
-    //         response.data,
-    //         unzip.Parse(),
-    //         // @ts-ignore
-    //         async function* (source: AsyncIterable<PassThrough>) {
-    //             for await (const entry of source) {
+    //     // ac.abort();
 
-    //                 pipeline(
-    //                     entry,
-    //                     iconvLite.decodeStream('win1251'),
-    //                     parser,
-    //                     async function* (source: AsyncIterable<Entry>) {
-    //                         // @ts-ignore
-    //                         for await (const chunk of source as AsyncIterable<MedproductsRecord>) {
-    //                             const [name, content] = chunk.name.split('<br>');
-    //                             const productionAddresses = chunk.address_production.split('\n');
+    //     try {
+    //         await this.buildPipeline({
+    //             input: fileStream,
+    //             output: res,
+    //             format: metadata.data!.format,
+    //             compress: true,
+    //             abort: ac.signal,
+    //         });
+    //         console.log('Am i here?')
+    //     } catch(error) {
+    //         console.log(error);
+    //     }
 
-    //                             const obj = {
-    //                                 uid: Number(chunk.unique_number),
-    //                                 number: chunk.registration_number,
-    //                                 issuedDate: chunk.registration_date,
-    //                                 validBefore: chunk.registration_date_end === '' ? null : chunk.registration_date_end,
-    //                                 name: name,
-    //                                 content,
-    //                                 applicant: chunk.applicant,
-    //                                 applicantLegalAddress: chunk.applicant_address_legal,
-    //                                 producer: chunk.producer,
-    //                                 producerLegalAddress: chunk.producer_address_legal,
-    //                                 okp: chunk.okp,
-    //                                 class: chunk.class,
-    //                                 kind: Number(chunk.kind),
-    //                                 productionAddresses,
-    //                             }
+    // }
 
-    //                             yield obj;
+
+    // private buildPipeline(options: {
+    //     input: Readable;
+    //     output?: Writable;
+    //     format: 'xml' | 'csv';
+    //     compress: boolean;
+    //     abort?: AbortSignal,
+    // }) {
+
+    //     this.logger.info('Building pipeline');
+    //     const self = this;
+
+    //     const items = [] as unknown as any[];
+
+    //     items.push(options.input);
+
+    //     if(options.format.toLowerCase() === 'xml') {
+    //         const separator = `<classificator>`;
+    //         items.push(
+    //             new MatcherStream(separator, { skipFirst: true }),
+    //             async function*(source: AsyncIterable<string>) {
+    //                 for await (const xmlChunk of source) {
+    //                     const string = xmlChunk.toString();
+    //                     const data = parseXML(string); 
+    //                     const { code, name, description } = data.classificator;
+    //                     yield {
+    //                         code, 
+    //                         name, 
+    //                         description
+    //                     }
+    //                 }
+    //             },
+    //         );
+    //     } else if(options.format.toLowerCase() === 'csv') {
+    //         items.push(
+    //             iconvLite.decodeStream('win1251'),
+
+    //             parse({
+    //                 columns: true,
+    //                 relax: true,
+    //                 delimiter: ';',
+    //             }),
+    //         );
+    //     }
+
+    //     items.push(new ArrayJSONStream());
+
+    //     if(options.compress) {
+    //         items.push(zlib.createGzip());
+    //     }
+
+    //     if(options.output) {
+    //         items.push(options.output);
+    //     }
+
+    //     const opts = {} as PipelineOptions;
+
+    //     if(options.abort) {
+    //         opts.signal = options.abort;
+    //     }
+
+    //     return pipeline(bench(items), opts);
+    // }
+
+    // private async getFile(objectName: string): Promise<Readable | null> {
+
+    //     try {
+
+    //         const fileStream = await this.broker.call('s3.getObject', {
+    //             bucketName: this.settings.bucketName,
+    //             objectName,
+    //             timeout: 0,
+    //         }) as Readable;
+
+    //         if(path.extname(objectName) === '.br') {
+    //             const output = new PassThrough();
+    //             pipeline(
+    //                 fileStream,
+    //                 zlib.createBrotliDecompress(),
+    //                 output,
+    //             )
+    //             finished(output).catch((error) => {
+    //                 this.logger.info('Could not decompress files', error);
+    //             });
+
+    //             return output;
+    //         } else {
+    //             return fileStream;
+    //         }
+
+    //     } catch(error) {
+    //         this.logger.warn(`Object - ${objectName} not found in storage`)
+    //     }
+
+    //     return null;
+
+    // }
+
+    // private async putFile(fileStream: Readable, objectName: string, compress?: boolean) {
+
+    //     pipeline(
+    //         fileStream,
+    //         zlib.createBrotliCompress(),
+    //         async (source) => {
+    //             try {
+    //                 await this.broker.call('s3.putObject', source, {
+    //                     meta: {
+    //                         bucketName: this.settings.bucketName,
+    //                         objectName,
+    //                     },
+    //                     timeout: 0,
+    //                 });
+    //                 return true;
+    //             } catch(error) {
+    //                 this.logger.error(error);
+    //             }
+    //             return false;
+    //         }
+    //     );
+
+    // }
+
+    // private getFileName(filename: string, format: string, options?: { compressed: boolean }) {
+    //     return `${filename}.${format}${options?.compressed ? '.br' : ''}`;
+    // }
+
+    // private getOpendataObjectName(
+    //     type: 'list' | 'meta' | 'structure' | 'data',
+    //     catalog: string,
+    //     classificator?: string,
+    //     filename: string,
+        
+    //     isEncoded?: boolean
+    // ) {
+
+    //     const path_parts = [];
+
+    //     path.join(catalog, classificator, this.getFileName(filename, format, { compressed }));
+
+    //     path.join(catalog.name, classificatorInfo.name, `${record.name}.${record.format}${isEncoded ?  '.br' : ''}`)
+
+    //     if(type === 'list') {
+    //         return path.join(catalog.name, `${catalog[type].name}${isEncoded ?  '.br' : ''}`)
+    //     } else if(classificator !== undefined) {
+    //         const classificatorInfo = catalog.classificators[classificator];
+    //         if(type === 'data') {
+    //             const record = classificatorInfo?.[type];
+    //             if(record) {
+    //                 return path.join(catalog.name, classificatorInfo.name, `${record.name}.${record.format}${isEncoded ?  '.br' : ''}`);
+    //             }
+    //         } else {
+    //             const record = classificatorInfo?.[type];
+    //             if(record) {
+    //                 return path.join(catalog.name, classificatorInfo.name, `${record.name}${isEncoded ?  '.br' : ''}`)
+    //             }
+    //         }
+    //     }
+    //     return null;
+    // }
+
+    // private async fetchOpendataFile(url: string, options?: FetchDataOptions) {
+
+    //     const isEncoded = options?.compress || true;
+    //     const useCache = options?.cache || true;
+
+    //     const objectName = this.getOpendataObjectName(catalog, type, classificator, isEncoded);
+    //     if(!objectName) {
+    //         throw new Error('Could not found catalog type');
+    //     }
+
+    //     if(useCache) {
+    //         const fileStream = await this.getFile(objectName);
+    //         if(fileStream) {
+    //             return fileStream;            
+    //         }
+    //     }
+
+    //     const fileUrl = this.getOpendataFileURL(catalog, type, classificator);
+    //     this.logger.info(fileUrl)
+    //     if(!fileUrl) {
+    //         throw new Error('Could not found catalog type url');
+    //     }
+
+    //     try {
+
+    //         if(options?.sleep) {
+    //             await delay(options.sleep);
+    //         }
+
+    //         this.logger.debug(`Fetching ${objectName} from ${fileUrl}`);
+    //         const response = await axios.get(fileUrl, {
+    //             responseType: 'stream',
+    //         });
+
+    //         if(!response.data) {
+    //             return null;
+    //         }
+
+    //         const outputStream = new PassThrough();
+    //         // this.logger.warn(response.headers);
+    //         if(response.headers['content-type'] === 'application/zip') {
+    //             pipeline(
+    //                 response.data, 
+    //                 unzip.Parse(), 
+    //                 async function*(source) {
+    //                     for await(const entry of source) {
+    //                         for await (const chunk of entry) {
+    //                             yield chunk;
     //                         }
     //                     }
-    //                 )
-    //             }
-    //         },
-    //         async function* (source: AsyncIterable<any>) {
+    //                 },
+    //                 outputStream
+    //             );
+    //         } else {
+    //             response.data.pipe(outputStream);
+    //         }
 
-    //             const s = new Set();
+    //         if(useCache) {
+    //             const fileStream = new PassThrough();
+    //             outputStream.pipe(fileStream);
+    //             this.logger.debug(`Saving ${objectName} to storage`);
+    //             const fileSaved = await this.putFile(fileStream, objectName, isEncoded);
+    //             // if(!fileSaved) {
+    //             //     this.logger.error(`Could not save ${objectName}`);
+    //             // }
+    //         }
 
-    //             for await (const chunk of source) {
-    //                 if (!chunk.content) {
+    //         return outputStream;
+    //     } catch(error) {
+    //         this.logger.error(error);
+    //     }
+
+    //     return null;
+
+    // }
+
+    // private async loadCatalogList(catalog: OpendataCatalog) {
+
+    //     this.logger.debug(`Fetching catalog list`);
+    //     const fileStream = await this.fetchOpendataFile(catalog, 'list');
+
+    //     if(!fileStream) {
+    //         return null;
+    //     }
+    //     const self = this;
+
+    //     const oneToOneProperties = ['description', 'subject'] as const;
+    //     const dataProperties = ['created', 'modified', 'valid'] as const;
+
+    //     this.logger.warn(`Parsing list file`);
+    //     await pipeline(
+    //         fileStream,
+    //         parse({
+    //             columns: true,
+    //         }),
+    //         async function* (source: AsyncIterable<OpendataCSVList>) {
+    //             for await (const { property, title, value, format } of source) {
+    //                 if (property === 'standardversion') {
     //                     continue;
     //                 }
-    //                 const content = (chunk.content as string);
-    //                 if (content.includes(':')) {
-    //                     const [first] = content.split(':');
-    //                     s.add(first);
+
+    //                 const pathname = new URL(value).pathname;
+                    
+    //                 const classificatorInfo: OpendataClassificator = {
+    //                     name: property,
+    //                     title,
+    //                     description: '',
+    //                     subject: '',
+    //                     created: null,
+    //                     modified: null,
+    //                     valid: null,
+    //                     format,
+    //                     meta: {
+    //                         name: path.basename(pathname),
+    //                         format: path.extname(pathname).slice(1) as 'xml' | 'csv',
+    //                     },
+    //                     structure: null,
+    //                     data: null,
     //                 }
 
-    //                 // break;
-    //             }
+    //                 catalog.classificators[classificatorInfo.name] = classificatorInfo;
 
-    //             console.log([...s].join('\n'))
+    //                 self.logger.warn(`Fetching classificator metadata`);
+    //                 const fileStream = await self.fetchOpendataFile(catalog, 'meta', classificatorInfo.name, {
+    //                     sleep: 500,
+    //                 });
+    //                 if(!fileStream) {
+    //                     self.logger.info(`Could not load metadata for - ${catalog.name}/${classificatorInfo.name}`);
+    //                     continue;
+    //                 }
 
-    //         }
-    //     )
+    //                 const dataUrls = [];
+    //                 const structureUrls = [];
 
-
-    // }
-
-
-    // private findCatalogInfo(catalogName: string): CatalogRecord | null {
-
-    //     // const data = ODCatalog.find((record: CatalogRecord) => record.name === catalogName);
-
-    //     // if(data) {
-    //     //     return data;
-    //     // }
-
-    //     return null;
-
-    // }
-
-    // private async getCatalogMetaInfo(catalog: CatalogRecord) {
-
-    //     try {
-    //         const url = path.join(catalog.url, catalog.meta);
-    //         const response =  await axios.get(url);
-    //         // console.log(response.status)
-
-    //         if(response.status === 200) {
-
-    //             switch(catalog.meta_type) {
-    //                 case 'csv': return this.parseCSVMetaInfo(response.data);
-    //             }
-    //         }
-
-    //         throw new Errors.MoleculerRetryableError(`Could not load meta info from -${url}`);
-
-    //     } catch(error: unknown) {
-    //         if(error instanceof Errors.MoleculerRetryableError) {
-    //             throw error;
-    //         }
-    //         console.log(error)
-    //     }
-
-    // }
-
-
-    // private parseCSVMetaInfo(metaInfo: string) {
-
-    //     const mapping = {
-    //         identifier: 'id',
-    //         title: 'title',
-    //         subject: 'subject',
-    //         description: 'description',
-    //         creator: 'creator',
-    //         format: 'format',
-    //         structure: 'structure',
-    //     } as const;
-
-    //     const data = csvParseSync(metaInfo, { columns: true });
-
-    //     let createdString = '';
-
-    //     const meta = {} as CatalogMeta;
-
-    //     for(const { property, value } of data) {
-    //         if(typeof property === 'string') {
-    //             if(property in mapping) {
-    //                 meta[mapping[property as keyof typeof mapping] as keyof CatalogMeta] = value;
-    //             } else if(typeof value === 'string' && value !== '') {
-    //                 switch(property) {
-    //                     case 'created': {
-    //                         createdString = value;
-    //                         meta.created = new Date(Number(value.substr(0, 4)), Number(value.substr(5, 2)) - 1, Number(value.substr(-2)));
-    //                         break;
+    //                 for await (const { property, value } of fileStream.pipe(parse({ columns: true })) as AsyncIterable<RawClassificatorInfo>) {
+    //                     if (property === 'standardversion') {
+    //                         continue;
     //                     }
-    //                     case 'modified': {
-    //                         meta.modified = new Date(Number(value.substr(0, 4)), Number(value.substr(5, 2)) - 1, Number(value.substr(-2)));;
-    //                         break;
+    //                     if(property === 'format') {
+    //                         classificatorInfo.format = value as SupportedFileFormats;
+    //                     } else if(includes(oneToOneProperties, property)) {
+    //                         classificatorInfo[property] = value;
+    //                     } else if(includes(dataProperties, property)) {
+    //                         classificatorInfo[property] = formatDate(value);
+    //                     } else if(property.startsWith('structure')) {
+    //                         structureUrls.push({
+    //                             name: property,
+    //                             url: value,
+    //                         });
+    //                     } else if(property.startsWith('data')) {
+    //                         dataUrls.push({
+    //                             name: property,
+    //                             url: value,
+    //                         });
     //                     }
-    //                     case 'valid': {
-    //                         meta.validBefore = new Date(Number(value.substr(0, 4)), Number(value.substr(5, 2)) - 1, Number(value.substr(-2)));;
-    //                         break;
-    //                     }
-    //                     default: {
+    //                 }
 
-    //                         if(property.startsWith('structure')) {
-    //                             meta.structure = {
-    //                                 name: property,
-    //                                 url: value
-    //                             }
+    //                 structureUrls.sort((a,b) => {
+    //                     const dateA = formatDate(a.name.replace('structure-', ''));
+    //                     const dateB = formatDate(b.name.replace('structure-', ''))
+    //                     return dateB.getTime() - dateA.getTime();
+    //                 }).forEach(({ name, url }, index) => {                        
+    //                     if(index === 0) {
+    //                         const pathname = new URL(url).pathname;
+    //                         classificatorInfo.structure = {
+    //                             name: path.basename(pathname),
+    //                             format: path.extname(pathname).slice(1) as 'xml' | 'csv',
+    //                             fields: {},
+    //                             previous: [],
     //                         }
+    //                     } else {
+    //                         classificatorInfo.structure?.previous.push(name);
     //                     }
-    //                 }
-    //             }
-    //         }
+    //                 });
 
-    //         if(meta.structure && createdString) {
-
-    //             const dataArray = data.filter(([property]: [string, string]) => property.startsWith('data'));
-
-    //             for(const [property, value] of dataArray as [string, string][]) {
-
-    //                 if(property === `data-${createdString}-${meta.structure}`) {
-    //                     meta.current = value;
-    //                 } else {
-    //                     if(!meta.previous) {
-    //                         meta.previous = [];
+    //                 dataUrls.sort((a,b) => {
+    //                     const dateA = formatDate(a.name.replace('data-', '').slice(0, 8));
+    //                     const dateB = formatDate(b.name.replace('data-', '').slice(0, 8));
+    //                     return dateB.getTime() - dateA.getTime();
+    //                 }).forEach(({ name, url }, index) => {                        
+    //                     if(index === 0) {
+    //                         const pathname = new URL(url).pathname;
+    //                         classificatorInfo.data = {
+    //                             name: name,
+    //                             archive: path.extname(pathname).slice(1) as 'xml' | 'csv' | 'zip' === 'zip',
+    //                             format: classificatorInfo.format,
+    //                             previous: [],
+    //                         }
+    //                     } else {
+    //                         classificatorInfo.data?.previous.push(name);
     //                     }
-    //                     meta.previous.push(value);
-    //                 }
+    //                 })
 
     //             }
     //         }
-
-
-    //     }
-
-    //     return meta;
+    //     );
 
     // }
 
-    // // INIT
+    // private initOpendataDatabase() {
 
-    // private async initializeList(init = false) {
-
-    //     if(init) {
-    //         this.removeAllListItems();
+    //     if(this.settings.opendataItems.length === 0) {
+    //         this.logger.warn('No opendata items in settings!');
+    //         return false;
     //     }
 
-    //     for(const listItem of this.settings.initialList) {
+    //     for(const item of this.settings.opendataItems) {
+            
+    //         const url = new URL(item.url);
+    //         const pathname = url.pathname;
 
-    //         // if(init || !this.db.list.includes(listItem.name) || this.db.list.get(listItem.name).url !== listItem.url) {
-    //             await this.loadListItem(listItem);
-    //         // }
-
-    //     }
-
-    // }
-
-    // private async fetchCSVData(url: string, useStream = true) {
-
-    //     try {
-    //         const options = useStream ? { responseType: 'stream' } as const : {};
-    //         const response = await axios.get<Readable>(url, options);
-
-    //         if(response.status === 200) {
-    //             return response.data;
+    //         this.database[item.name] = {
+    //             name: item.name,
+    //             base_url: path.join(url.origin, path.dirname(pathname)),
+    //             list: {
+    //                 name: path.basename(pathname),
+    //                 format: path.extname(pathname).slice(1) as 'xml' | 'csv',
+    //             },
+    //             classificators: {}
     //         }
-    //     } catch(error) {
-    //         // console.log(error);
-    //     }
-
-    //     return null;
-    // }
-
-    // private async *parseData(stream: Readable) {
-
-    //     for await (const chunk of stream.pipe(parse({ columns: true, relax: true }))) {
-
-    //         if(chunk.property === 'standardversion') {
-    //             continue;
-    //         }
-
-    //         const data =  {
-    //             id: chunk.property,
-    //             name: chunk.title,
-    //             meta_url: chunk.value,
-    //             meta_type: chunk.format,
-
-    //             description: "",
-    //             format: '',
-    //             created: '',
-    //             modified: '',
-    //             valid: '',
-    //             structure_url: "",
-    //             data_url: "",
-    //         }
-
-    //         const stream = await this.fetchCSVData(data.meta_url, false);
-
-    //         if(stream === null) {
-    //             console.log('FAILED');
-    //             yield data;
-    //             continue;
-    //         }
-
-    //         let maxStructureDate = null;
-    //         let maxDataDate = null;
-    //         for await (const { property, value } of stream.pipe(parse({ columns: true, relax: true })) as AsyncIterable<{property: keyof RawClassificator, value: string }>) {
-    //             if(property in data) {
-    //                 data[property] = value;
-    //             } else if(property.startsWith('structure-')) {
-    //                 const maxDate = Number(property.replace('structure-', ''));
-    //                 if(!maxStructureDate) {
-    //                     data.structure_url = value;
-    //                     maxStructureDate = maxDate;
-    //                 } else if(maxDate > maxStructureDate) {
-    //                     data.structure_url = value;
-    //                     maxStructureDate = maxDate;
-    //                 }
-    //             } else if(property.startsWith('data-')) {
-    //                 const maxDate = Number(property.replace('data-', '').substr(0, 8));
-    //                 if(!maxDataDate) {
-    //                     data.structure_url = value;
-    //                     maxDataDate = maxDate;
-    //                 } else if(maxDataDate < maxDate) {
-    //                     data.data_url = value;
-    //                     maxDataDate = maxDate;
-    //                 }
-    //             }
-    //         }
-    //         console.log('SUCCESS');
-
-    //         yield data;
 
     //     }
 
     // }
- 
-    // private async loadListItem(item: any) {
 
-    //     const responseData = await this.fetchCSVData(item.url);
+    // private async loadOpendataItems() {
 
-    //     if(responseData === null) {
+    //     const initialized = this.initOpendataDatabase();
+
+    //     if(initialized === false) {
+    //         this.logger.error('Could not init opendata database');
     //         return;
     //     }
 
-    //     const newCategory = {
-    //         name: item.name,
-    //         classificators: {},
-    //     } as Category;
+    //     const items = Object.values(this.database).map((catalog) => {
+    //         return this.loadCatalogList(catalog);
+    //     });
+        
+    //     await Promise.all(items);
 
-    //     for await (const row of this.parseData(responseData)) {
-    //         newCategory.classificators[row.id] = row;
-    //     }
+    // }
 
-    //     // console.log(newCategory);
+    // private async started() {
 
-    //     // const self = this;
+    //     const bucketExist = await this.broker.call('s3.bucketExists', {
+	// 		bucketName: this.settings.bucketName,
+	// 	});
 
-    //     // try {
-    //     //     await pipeline(
-    //     //         responseData,
-    //     //         parse({
-    //     //             columns: true,
-    //     //             relax: true,
-    //     //         }),
-    //     //         async function* (source) {
-    //     //             let i = 0;
-    //     //             for await (const chunk of source) {
+	// 	if(!bucketExist) {
+	// 		await this.broker.call('s3.makeBucket', {
+	// 			bucketName: this.settings.bucketName,
+	// 			region: 'us-east-1',
+	// 		});
+	// 	}
 
-    //     //                 if(i > 4) {
-    //     //                     return;
-    //     //                 }
-    //     //                 i++;
-
-    //     //                 if(chunk.property === 'standardversion') {
-    //     //                     continue;
-    //     //                 }
-
-    //     //                 const id = chunk.property;
-
-    //     //                 newCategory.classificators[id] = {
-    //     //                     id: chunk.property,
-    //     //                     name: chunk.title,
-    //     //                     meta_url: chunk.value,
-    //     //                     meta_type: chunk.format,
-
-    //     //                     description: "",
-    //     //                     format: '',
-    //     //                     created: '',
-    //     //                     modified: '',
-    //     //                     valid: '',
-    //     //                     structure_url: "",
-    //     //                     data_url: "",
-    //     //                 }
-
-    //     //                 const responseData = await self.fetchCSVData(chunk.value);
-
-    //     //                 if(responseData === null) {
-    //     //                     continue;
-    //     //                 }
-
-    //     //                 try {
-    //     //                     await pipeline(
-    //     //                         responseData,
-    //     //                         parse({
-    //     //                             columns: true,
-    //     //                             relax: true,
-    //     //                         }),
-    //     //                         async function (source: AsyncIterable<{property: keyof RawClassificator, value: string }>) {
-    //     //                             let maxStructureDate = null;
-    //     //                             let maxDataDate = null;
-    //     //                             for await (const { property, value, ...rest } of source) {
-    //     //                                 try {
-    //     //                                     if(newCategory.classificators[id][property]) {
-    //     //                                         newCategory.classificators[id][property] = value;
-    //     //                                     } else if(property.startsWith('structure-')) {
-    //     //                                         const maxDate = Number(property.replace('structure-', ''));
-    //     //                                         if(!maxStructureDate) {
-    //     //                                             newCategory.classificators[id].structure_url = value;
-    //     //                                             maxStructureDate = maxDate;
-    //     //                                         } else if(maxDate > maxStructureDate) {
-    //     //                                             newCategory.classificators[id].structure_url = value;
-    //     //                                             maxStructureDate = maxDate;
-    //     //                                         }
-    //     //                                     } else if(property.startsWith('data-')) {
-    //     //                                         const maxDate = Number(property.replace('data-', '').substr(0, 8));
-    //     //                                         if(!maxDataDate) {
-    //     //                                             newCategory.classificators[id].structure_url = value;
-    //     //                                             maxDataDate = maxDate;
-    //     //                                         } else if(maxDataDate < maxDate) {
-    //     //                                             newCategory.classificators[id].data_url = value;
-    //     //                                             maxDataDate = maxDate;                                                
-    //     //                                         }
-    //     //                                     }
-    //     //                                 } catch(error) {
-    //     //                                     console.log(error)
-    //     //                                 }
-    //     //                             }
-    //     //                         }
-    //     //                     );
-    //     //                 } catch(error) {
-    //     //                     console.log('error1', error)
-    //     //                 }
-
-    //     //             }
-    //     //         }
-    //     //     )
-
-    //     // } catch(error) {
-    //     //     console.log('error', error)
-    //     // }
-
-    //     // console.log(newCategory)        
+    //     this.loadOpendataItems().then(() => {
+    //         // console.dir(this.database, {
+    //         //     compact: false,
+    //         //     depth: 10,
+    //         // })
+    //     }).catch((error) => this.logger.info(error));
 
 
     // }
 
+
     // // 
 
-    private async load() {
+    
+    // private async *parseOpendataCSVList(source: AsyncIterable<OpendataCSVList>) {
 
-        let stream: Readable | null = null;
+    //     const oneToOneProperties = ['description', 'subject'] as const;
+    //     const dataProperties = ['created', 'modified', 'valid'] as const;
 
-        const pathToList = path.join(__dirname, '..', 'roszdravnadzor', 'list.csv');
-        if(!fs.existsSync(path.dirname(pathToList))) {
-            fs.mkdirSync(path.dirname(pathToList));
-        }
-        if(fs.existsSync(pathToList)) {
-            stream = fs.createReadStream(pathToList);
-        } else {
-            const response = await axios.get('https://roszdravnadzor.gov.ru/opendata/list.csv', { responseType: 'stream' });
-            if (response.data) {
-                stream = new PassThrough();
-                response.data.pipe(stream);
-                response.data.pipe(fs.createWriteStream(pathToList));
-            }
-        }
+    //     for await (const { property, title, value, format } of source) {
+    //         if (property === 'standardversion') {
+    //             continue;
+    //         }
 
-        if(!stream) {
-            console.log('Cannot load list')
-            return;
-        }
+    //         const pathname = new URL(value).pathname;
+            
+    //         const classificatorInfo: OpendataClassificator = {
+    //             name: property,
+    //             title,
+    //             description: '',
+    //             subject: '',
+    //             created: null,
+    //             modified: null,
+    //             valid: null,
+    //             format,
+    //             meta: {
+    //                 name: path.basename(pathname),
+    //                 format: path.extname(pathname).slice(1) as 'xml' | 'csv',
+    //             },
+    //             structure: null,
+    //             data: null,
+    //         }
 
-        const parsingStream = await this.parseCaterogyList(stream);
+    //         catalog.classificators[classificatorInfo.name] = classificatorInfo;
 
-        parsingStream
-            .pipe(
-                new Transform({
-                    objectMode: true,
-                    transform: (chunk, e, cb) => {
-                        console.log(chunk)
-                        cb();
-                    }
-                })
-            )
+    //         this.logger.warn(`Fetching classificator metadata`);
+    //         const fileStream = await this.fetchOpendataFile(catalog, 'meta', classificatorInfo.name, {
+    //             sleep: 500,
+    //         });
+    //         if(!fileStream) {
+    //             this.logger.info(`Could not load metadata for - ${catalog.name}/${classificatorInfo.name}`);
+    //             continue;
+    //         }
 
-    }
+    //         const dataUrls = [];
+    //         const structureUrls = [];
 
-    private async fetchCategoryMetadata(url: string) {
-        const filePath = path.join(__dirname, '../roszdravnadzor', path.dirname(url), path.basename(url));
-        if(!fs.existsSync(path.dirname(filePath))) {
-            fs.mkdirSync(path.dirname(filePath));
-        }
-        if (fs.existsSync(filePath)) {
-            return fs.createReadStream(filePath);
-        } else {
-            const response = await axios.get(url, { responseType: 'stream' });                        
-            if(response.data) {
-                const stream = new PassThrough();
-                response.data.pipe(stream)
-                response.data.pipe(fs.createWriteStream(filePath));
-                return stream;
-            }
-        }
-    }
+    //         for await (const { property, value } of fileStream.pipe(parse({ columns: true })) as AsyncIterable<RawClassificatorInfo>) {
+    //             if (property === 'standardversion') {
+    //                 continue;
+    //             }
+    //             if(property === 'format') {
+    //                 classificatorInfo.format = value as SupportedFileFormats;
+    //             } else if(includes(oneToOneProperties, property)) {
+    //                 classificatorInfo[property] = value;
+    //             } else if(includes(dataProperties, property)) {
+    //                 classificatorInfo[property] = formatDate(value);
+    //             } else if(property.startsWith('structure')) {
+    //                 structureUrls.push({
+    //                     name: property,
+    //                     url: value,
+    //                 });
+    //             } else if(property.startsWith('data')) {
+    //                 dataUrls.push({
+    //                     name: property,
+    //                     url: value,
+    //                 });
+    //             }
+    //         }
 
-    private async parseCaterogyList(source: Readable) {
+    //         structureUrls.sort((a,b) => {
+    //             const dateA = formatDate(a.name.replace('structure-', ''));
+    //             const dateB = formatDate(b.name.replace('structure-', ''))
+    //             return dateB.getTime() - dateA.getTime();
+    //         }).forEach(({ name, url }, index) => {                        
+    //             if(index === 0) {
+    //                 const pathname = new URL(url).pathname;
+    //                 classificatorInfo.structure = {
+    //                     name: path.basename(pathname),
+    //                     format: path.extname(pathname).slice(1) as 'xml' | 'csv',
+    //                     fields: {},
+    //                     previous: [],
+    //                 }
+    //             } else {
+    //                 classificatorInfo.structure?.previous.push(name);
+    //             }
+    //         });
 
-        const through = new PassThrough({
-            objectMode: true,
-        });
+    //         dataUrls.sort((a,b) => {
+    //             const dateA = formatDate(a.name.replace('data-', '').slice(0, 8));
+    //             const dateB = formatDate(b.name.replace('data-', '').slice(0, 8));
+    //             return dateB.getTime() - dateA.getTime();
+    //         }).forEach(({ name, url }, index) => {                        
+    //             if(index === 0) {
+    //                 const pathname = new URL(url).pathname;
+    //                 classificatorInfo.data = {
+    //                     name: name,
+    //                     archive: path.extname(pathname).slice(1) as 'xml' | 'csv' | 'zip' === 'zip',
+    //                     format: classificatorInfo.format,
+    //                     previous: [],
+    //                 }
+    //             } else {
+    //                 classificatorInfo.data?.previous.push(name);
+    //             }
+    //         })
 
-        const self = this;
+    //     }
 
-        const oneToOneProperties = ['description', 'format'] as const;
-        const dataProperties = ['created', 'modified', 'valid'] as const;
-
-        pipeline(
-            source,
-            parse({
-                columns: true,
-            }),
-            async function* (source: AsyncIterable<{ property: string; title: string; value: string; format: string }>) {
-                for await (const row of source) {
-                    if (row.property === 'standardversion') {
-                        continue;
-                    }
-
-                    const data = {
-                        id: row.property,
-                        name: row.title,
-                        meta_url: row.value,
-                        meta_type: row.format,
-                    } as ClassificatorInfo;
-
-                    await delay(1000);
-                    const stream = await self.fetchCategoryMetadata(data.meta_url);
-                    if(!stream) {
-                        console.log('Cannot load metadata', data.name);
-                        continue;
-                    }
-
-                    let maxStructureDate = null;
-                    let maxDataDate = null;
-
-                    for await (const { property, value } of stream.pipe(parse({ columns: true })) as AsyncIterable<RawClassificatorInfo>) {
-                        if (property === 'standardversion') {
-                            continue;
-                        }
-                        if(oneToOneProperties.includes(property)) {
-                            data[property as keyof ClassificatorInfo] = (value as any);
-                        } else if(property in dataProperties) {
-                            data[property] = formatDate(value);
-                        } else if(property.startsWith('structure')) {
-                            const maxDate = formatDate(property.replace('structure-', ''));
-                            if(!maxStructureDate || maxDate > maxStructureDate) {
-                                data.structure_url = value;
-                                maxStructureDate = maxDate;
-                            }
-                        } else if(property.startsWith('data')) {
-                            const maxDate = formatDate(property.replace('data-', '').substr(0, 8));
-                            if(!maxDataDate || maxDate > maxDataDate) {
-                                data.data_url = value;
-                                maxDataDate = maxDate;
-                            }
-                        }
-                    }
-
-                    yield data;
-                }
-            },
-            async function* (source) {
-                for await (const data of source) {
-                    await delay(1000);
-                    const stream = await self.fetchCategoryMetadata(data.meta_url);
-                    if(!stream) {
-                        console.log('Cannot load metadata', data.name);
-                        continue;
-                    }
-
-                    
-
-                    yield data;
-                }
-            },
-            through
-        );
-
-        return through;
-
-    }
-
-
-    private async started() {
-
-        this.load();
-
-
-
-    }
-
-
+    // }
 
 
 };

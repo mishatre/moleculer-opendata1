@@ -1,5 +1,5 @@
 
-import {Service, ServiceBroker, Context} from "moleculer";
+import {Service, ServiceBroker} from "moleculer";
 import Laboratory from '@moleculer/lab';
 
 

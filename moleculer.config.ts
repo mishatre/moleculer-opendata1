@@ -1,5 +1,5 @@
 "use strict";
-import {BrokerOptions, MetricRegistry} from "moleculer";
+import type {BrokerOptions, MetricRegistry} from "moleculer";
 import "@moleculer/lab";
 
 /**
@@ -37,8 +37,22 @@ const brokerConfig: BrokerOptions = {
 
 	// Enable/disable logging or use custom logger. More info: https://moleculer.services/docs/0.14/logging.html
 	// Available logger types: "Console", "File", "Pino", "Winston", "Bunyan", "debug", "Log4js", "Datadog"
-	logger: {
-		type: "Console",
+	logger: [{
+		type: "console",
+		options: {
+			// Using colors on the output
+			colors: true,
+			// Print module names with different colors (like docker-compose for containers)
+			moduleColors: false,
+			// Line formatter. It can be "json", "short", "simple", "full", a `Function` or a template string like "{timestamp} {level} {nodeID}/{mod}: {msg}"
+			formatter: "short",
+			// Custom object printer. If not defined, it uses the `util.inspect` method.
+			objectPrinter: null,
+			// Auto-padding the module name in order to messages begin at the same column.
+			autoPadding: false,
+		},
+	},{
+		type: "Laboratory",
 		options: {
 			// Using colors on the output
 			colors: true,
@@ -51,7 +65,7 @@ const brokerConfig: BrokerOptions = {
 			// Auto-padding the module name in order to messages begin at the same column.
 			autoPadding: false,
 		},
-	},
+	}],
 	// Default log level for built-in console logger. It can be overwritten in logger options above.
 	// Available values: trace, debug, info, warn, error, fatal
 	logLevel: "info",

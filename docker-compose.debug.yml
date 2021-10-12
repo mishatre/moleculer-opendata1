@@ -1,0 +1,17 @@
+version: '3.4'
+
+services:
+  unpdfer:
+    image: unpdfer
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    environment:
+      NODE_ENV: development
+    ports:
+      - 5000:5000
+      - 3210:3210
+      - 9229:9229
+    volumes: 
+      - "./:/usr/src/app"
+    command: ["node", "--inspect=0.0.0.0:9229", "./node_modules/moleculer/bin/moleculer-runner.js --hot --repl --config moleculer.config.ts services/**/*.service.ts"]

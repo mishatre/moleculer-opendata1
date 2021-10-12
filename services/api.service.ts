@@ -1,6 +1,5 @@
 
-import {IncomingMessage} from "http";
-import {Service, ServiceBroker, Context} from "moleculer";
+import {Service, ServiceBroker } from "moleculer";
 import ApiGateway from "moleculer-web";
 
 export default class ApiService extends Service {

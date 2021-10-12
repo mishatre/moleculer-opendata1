@@ -1,21 +1,16 @@
-version: '3'
+version: '3.4'
 
 services:
-  api: 
-    build: .
+  unpdfer:
+    image: unpdfer
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    environment:
+      NODE_ENV: production
     ports:
-      - "5000:5000"
-      - "3210:3210"
+      - 5000:5000
+      - 3210:3210
+      - 9229:9229
     volumes: 
       - "./:/usr/src/app"
-#       - "reserved:/usr/src/app/node_modules"
-    # extra_hosts: 
-    #     - "myhostname:192.168.101.250"
-    # networks: 
-    #     - host
-# volumes:
-#   reserved:
-
-# networks: 
-#   host:
-  

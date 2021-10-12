@@ -1,14 +1,17 @@
 "use strict";
 
 import { Service as MoleculerService, ServiceBroker, Context} from "moleculer";
-import { Action, Event, Service } from "moleculer-decorators";
+import { Action, Event, Method, Service } from "moleculer-decorators";
 
 import Archiver from 'archiver';
 import fs from 'fs';
-import { pipeline, Readable, Writable } from 'stream';
+import { Readable, PassThrough, Writable } from 'stream';
+import { pipeline } from 'stream/promises';
 import im from '../src/imagemagick-stream';
 import Splitter from "../src/png-stream-splitter";
 import { v4 as uuid } from 'uuid'
+// @ts-ignore
+import gs from '../src/gs-stream';
 
 @Service({
 	name: 'pdf',
@@ -28,15 +31,27 @@ export default class PdfService extends MoleculerService<{ bucketName: string }>
 		rest: {
 			method: 'POST',
 			path: '/compress',
+			// @ts-ignore
+    		passReqResToParams: true,
+			type: 'stream',
 		},
-		type: 'stream',
-		visibility: 'public'
+		visibility: 'published'
 	})
-	public async compress(ctx: Context) {
-		im()
-			.compress('Zip')
-			.density(150)
-			.outputFormat('pdf')
+	public async compress(ctx: Context<any, any>) {
+
+		const cDisp = ((ctx.params.$req.headers['content-disposition'] || '') as string).split(';')[1].substr('filename='.length + 1);
+
+		ctx.meta.$responseHeaders = {
+			'Content-Disposition': `attachment; filename=${cDisp}`
+		};
+		ctx.meta.$responseType = 'application/octet-stream';
+		
+		const output = new PassThrough();
+
+		this.compressPdf(ctx.params, output);
+
+		return output;
+
 	}
 
 	@Action({
@@ -103,13 +118,13 @@ export default class PdfService extends MoleculerService<{ bucketName: string }>
 			stream,
 			this.getConvertCommandStream(),
 			splitter,
-			(err) => {
-				if(err) {
-					console.log(`Pipline error:`, err);
-				} else {
-					// archive.finalize();
-				}
-			}
+			// (err) => {
+			// 	if(err) {
+			// 		console.log(`Pipline error:`, err);
+			// 	} else {
+			// 		// archive.finalize();
+			// 	}
+			// }
 		)
 
 		return id;
@@ -123,6 +138,25 @@ export default class PdfService extends MoleculerService<{ bucketName: string }>
 			.depth(8)
 			.quality(85)
 			.outputFormat('png');
+	}
+
+	@Method
+	private async compressPdf(input: Readable, output: Writable) {
+
+		try {
+
+			await pipeline(
+				input,
+				gs().compress(150),
+				output
+			)
+
+			console.log('File compressed');
+
+		} catch(error) {
+			console.log(`Pipeline error`, error);
+		}
+
 	}
 
 	public async started() {
