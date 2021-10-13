@@ -1,30 +1,31 @@
 "use strict";
 
-import { Service as MoleculerService, ServiceBroker, Context} from "moleculer";
+import { Service as MoleculerService, Context } from "moleculer";
 import { Action, Event, Method, Service } from "moleculer-decorators";
 
-import Archiver from 'archiver';
-import fs from 'fs';
 import { Readable, PassThrough, Writable } from 'stream';
 import { pipeline } from 'stream/promises';
 import im from '../src/imagemagick-stream';
 import Splitter from "../src/png-stream-splitter";
 import { v4 as uuid } from 'uuid'
-// @ts-ignore
+
 import gs from '../src/gs-stream';
+
+interface ServiceSettings {
+	bucketName: string
+}
 
 @Service({
 	name: 'pdf',
 	version: 1,
 	dependencies: [
-		's3'
-	]
-})
-export default class PdfService extends MoleculerService<{ bucketName: string }> {
-
-	settings = {
-		bucketName: 'pdf',
+		'v1.s3'
+	],
+	settings: {
+		buckerName: 'pdf'
 	}
+})
+export default class PdfService extends MoleculerService<ServiceSettings> {
 
 	@Action({
 		name: 'compress',
@@ -32,7 +33,7 @@ export default class PdfService extends MoleculerService<{ bucketName: string }>
 			method: 'POST',
 			path: '/compress',
 			// @ts-ignore
-    		passReqResToParams: true,
+			passReqResToParams: true,
 			type: 'stream',
 		},
 		visibility: 'published'
@@ -45,7 +46,7 @@ export default class PdfService extends MoleculerService<{ bucketName: string }>
 			'Content-Disposition': `attachment; filename=${cDisp}`
 		};
 		ctx.meta.$responseType = 'application/octet-stream';
-		
+
 		const output = new PassThrough();
 
 		this.compressPdf(ctx.params, output);
@@ -73,7 +74,7 @@ export default class PdfService extends MoleculerService<{ bucketName: string }>
 			'Content-Disposition': "attachment; filename=converted.zip"
 		};
 		ctx.meta.$responseType = 'application/zip';
-		
+
 		return this.convertPdf(ctx.params);
 	}
 
@@ -86,7 +87,7 @@ export default class PdfService extends MoleculerService<{ bucketName: string }>
 		visibility: 'public',
 	})
 	public async create(ctx: Context<any>) {
-		
+
 	}
 
 	// Action
@@ -96,7 +97,7 @@ export default class PdfService extends MoleculerService<{ bucketName: string }>
 
 		// const archive = Archiver('zip');
 		// archive.on('error', (error: unknown) => console.log(error))
-	
+
 		const splitter = new Splitter();
 		splitter.on('data', (stream: Readable, index: number) => {
 
@@ -153,27 +154,29 @@ export default class PdfService extends MoleculerService<{ bucketName: string }>
 
 			console.log('File compressed');
 
-		} catch(error) {
+		} catch (error) {
 			console.log(`Pipeline error`, error);
 		}
 
 	}
 
-	public async started() {
-
-		this.logger.info('started');
-
+	@Method
+	private async initStorage() {
 		const bucketExist = await this.broker.call('s3.bucketExists', {
-			bucketName: 'pdf',
+			bucketName: this.settings.bucketName,
 		});
 
-		if(!bucketExist) {
+		if (!bucketExist) {
 			await this.broker.call('s3.makeBucket', {
 				bucketName: this.settings.bucketName,
 				region: 'us-east-1',
 			});
 		}
+	}
 
+	public async started() {
+		this.logger.info('started');
+		await this.initStorage();
 	}
 
 	public async stopped() {

@@ -26,25 +26,25 @@ function includes<T extends U, U>(coll: ReadonlyArray<T>, el: U): el is T {
 }
 // import type { Errors: { MoleculerRetryableError } } from 'moleculer';
 
-type PropertyValues = 'standardversion' | 
-'identifier' | 
-'title' | 
-'description' | 
-'creator' | 
-'publishername' | 
-'publisherphone' | 
-'publishermbox' |
-'format' |
-'created' |
-'modified' |
-'provenance' |
-'valid' |
-'subject' |
-`data-${number}-structure-${number}` | 
-`structure-${number}`;
+type PropertyValues = 'standardversion' |
+    'identifier' |
+    'title' |
+    'description' |
+    'creator' |
+    'publishername' |
+    'publisherphone' |
+    'publishermbox' |
+    'format' |
+    'created' |
+    'modified' |
+    'provenance' |
+    'valid' |
+    'subject' |
+    `data-${number}-structure-${number}` |
+    `structure-${number}`;
 
 type RawClassificatorInfo = {
-    property: PropertyValues, 
+    property: PropertyValues,
     value: string
 };
 
@@ -58,7 +58,7 @@ class ODCatalogNotFound extends Errors.MoleculerError {
 const formatDate = (dateString: string) => {
     return new Date(
         Number(dateString.substr(0, 4)),
-        Number(dateString.substr(4, 2)), 
+        Number(dateString.substr(4, 2)),
         Number(dateString.substr(6, 2))
     );
 };
@@ -76,9 +76,9 @@ interface FetchDataOptions {
 }
 
 interface OpendataCSVList {
-    property: string; 
-    title: string; 
-    value: string; 
+    property: string;
+    title: string;
+    value: string;
     format: 'csv' | 'xml';
 }
 
@@ -111,7 +111,7 @@ interface OpendataClassificator {
         name: string;
         format: SupportedFileFormats;
         fields: {
-            [key: string]: any    
+            [key: string]: any
         },
         previous: string[];
     },
@@ -127,36 +127,35 @@ interface OpenDataDatabase {
     [key: string]: OpendataCatalog;
 }
 
-interface OpendataListItem {
-    name: string;
-    url: string;
-}
-
-interface OpendataSettings {
-    bucketName?: string;
-    compressFiles?: boolean | 'gzip' | 'brotli';
-
-    opendataItems: OpendataListItem[];
-}
-
 interface RRequestCatalogData {
-    catalog: string; 
+    catalog: string;
     classificator: string;
     $req: any;
     $res: ServerResponse;
 }
 
 interface RRequestCatalogDataMeta {
-    $responseType: string, 
-    $responseHeaders: any, 
+    $responseType: string,
+    $responseHeaders: any,
     $streamObjectMode: boolean
+}
+
+interface ServiceSettings {
+    bucketName: string;
+    compressFiles: boolean;
+    opendataItem: {
+        name: string;
+        url: string;
+    }[]
 }
 
 @Service({
     name: 'opendata',
     version: 1,
 
-    dependencies: ['s3'],
+    dependencies: [
+        'v1.s3'
+    ],
 
     settings: {
 
@@ -165,7 +164,7 @@ interface RRequestCatalogDataMeta {
         bucketName: 'opendata',
 
         opendataItems: [
-            {   
+            {
                 name: "roszdravnadzor",
                 url: "https://roszdravnadzor.gov.ru/opendata/list.csv"
             }
@@ -174,7 +173,7 @@ interface RRequestCatalogDataMeta {
     }
 
 })
-export default class OpenDataService extends MoleculerService<OpendataSettings> {
+export default class OpenDataService extends MoleculerService<ServiceSettings> {
 
     private database: OpenDataDatabase = {};
 
@@ -192,7 +191,7 @@ export default class OpenDataService extends MoleculerService<OpendataSettings> 
     }
 
     @Action()
-    public async getCatalogList() {}
+    public async getCatalogList() { }
 
     @Action({
         rest: {
@@ -203,7 +202,7 @@ export default class OpenDataService extends MoleculerService<OpendataSettings> 
             catalog: 'string',
             classificator: 'string',
         },
-        visibility: 'published'    
+        visibility: 'published'
     })
     public async getCatalogInfo(ctx: any) {
 
@@ -221,7 +220,7 @@ export default class OpenDataService extends MoleculerService<OpendataSettings> 
             classificator,
         }) as 'not_loaded' | 'pending' | 'loading' | 'invalidated' | 'ready';
 
-        if(status === 'not_loaded' && autoload) {
+        if (status === 'not_loaded' && autoload) {
             this.broker.emit('requestCatalog', {
                 catalog,
                 classificator,
@@ -254,7 +253,7 @@ export default class OpenDataService extends MoleculerService<OpendataSettings> 
     //     if(!fileStream) {
     //         return null;
     //     }
-        
+
     //     const output = new PassThrough();
 
     //     this.putFile()
@@ -379,7 +378,7 @@ export default class OpenDataService extends MoleculerService<OpendataSettings> 
     //     if(!fileStream) {
     //         return null;
     //     }
-        
+
     //     const ac = new AbortController();
 
     //     res.on('close', () => {
@@ -535,7 +534,7 @@ export default class OpenDataService extends MoleculerService<OpendataSettings> 
     //     catalog: string,
     //     classificator?: string,
     //     filename: string,
-        
+
     //     isEncoded?: boolean
     // ) {
 
@@ -666,7 +665,7 @@ export default class OpenDataService extends MoleculerService<OpendataSettings> 
     //                 }
 
     //                 const pathname = new URL(value).pathname;
-                    
+
     //                 const classificatorInfo: OpendataClassificator = {
     //                     name: property,
     //                     title,
@@ -771,7 +770,7 @@ export default class OpenDataService extends MoleculerService<OpendataSettings> 
     //     }
 
     //     for(const item of this.settings.opendataItems) {
-            
+
     //         const url = new URL(item.url);
     //         const pathname = url.pathname;
 
@@ -801,7 +800,7 @@ export default class OpenDataService extends MoleculerService<OpendataSettings> 
     //     const items = Object.values(this.database).map((catalog) => {
     //         return this.loadCatalogList(catalog);
     //     });
-        
+
     //     await Promise.all(items);
 
     // }
@@ -809,15 +808,15 @@ export default class OpenDataService extends MoleculerService<OpendataSettings> 
     // private async started() {
 
     //     const bucketExist = await this.broker.call('s3.bucketExists', {
-	// 		bucketName: this.settings.bucketName,
-	// 	});
+    // 		bucketName: this.settings.bucketName,
+    // 	});
 
-	// 	if(!bucketExist) {
-	// 		await this.broker.call('s3.makeBucket', {
-	// 			bucketName: this.settings.bucketName,
-	// 			region: 'us-east-1',
-	// 		});
-	// 	}
+    // 	if(!bucketExist) {
+    // 		await this.broker.call('s3.makeBucket', {
+    // 			bucketName: this.settings.bucketName,
+    // 			region: 'us-east-1',
+    // 		});
+    // 	}
 
     //     this.loadOpendataItems().then(() => {
     //         // console.dir(this.database, {
@@ -832,7 +831,7 @@ export default class OpenDataService extends MoleculerService<OpendataSettings> 
 
     // // 
 
-    
+
     // private async *parseOpendataCSVList(source: AsyncIterable<OpendataCSVList>) {
 
     //     const oneToOneProperties = ['description', 'subject'] as const;
@@ -844,7 +843,7 @@ export default class OpenDataService extends MoleculerService<OpendataSettings> 
     //         }
 
     //         const pathname = new URL(value).pathname;
-            
+
     //         const classificatorInfo: OpendataClassificator = {
     //             name: property,
     //             title,

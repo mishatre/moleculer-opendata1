@@ -2,8 +2,19 @@
 import { Service as MoleculerService } from 'moleculer';
 import { Service, Action, Method } from 'moleculer-decorators';
 import { pipeline } from 'stream/promises';
+import { PipelineOptions } from 'stream';
 import { PassThrough, Readable, Writable } from 'stream';
-import unzip, { Entry } from 'unzip-stream';
+import unzip from 'unzip-stream';
+import iconvLite from 'iconv-lite';
+import bench from '../src/bench-stream';
+
+interface PipelineBuilderOptions {
+    input: Readable;
+    output: Writable;
+    encoding?: string;
+    singleFile?: boolean;
+    benchmark?: boolean;
+}
 
 @Service({
     name: 'zip',
@@ -16,8 +27,8 @@ export default class ZipService extends MoleculerService {
             method: 'POST',
             path: '/unzip-single',
             // @ts-ignore
-    		passReqResToParams: true,
-			type: 'stream',
+            passReqResToParams: true,
+            type: 'stream',
         },
         visibility: 'published',
     })
@@ -30,28 +41,60 @@ export default class ZipService extends MoleculerService {
         this.unzipSingleFile(ctx.params, output);
 
         return output;
-        
+
     }
 
     @Method
     private async unzipSingleFile(input: Readable, output: Writable) {
+
+        const unzipPipeline = this.buildUnzipPipeline({
+            input,
+            output,
+            singleFile: true,
+        })
+
         try {
-            await pipeline(
-                input,
-                unzip.Parse(),
-                async function*(source) {
-                    for await(const entry of source) {
+            await unzipPipeline();
+            console.log('File unzipped')
+        } catch (error) {
+            console.log(error);
+        }
+    }
+
+    @Method
+    private buildUnzipPipeline(options: PipelineBuilderOptions) {
+
+        const pipelineItems: Array<NodeJS.ReadableStream | NodeJS.WritableStream | NodeJS.ReadWriteStream> = [];
+
+        pipelineItems.push(options.input);
+
+        pipelineItems.push(unzip.Parse());
+
+        if (options.encoding) {
+            pipelineItems.push(iconvLite.decodeStream(options.encoding));
+        }
+
+        if (options.singleFile) {
+            pipelineItems.push(
+                // @ts-ignore
+                async function* (source: Readable) {
+                    for await (const entry of source) {
                         for await (const chunk of entry) {
                             yield chunk;
                         }
                     }
-                },
-                output,
+                }
             );
-            console.log('File unzipped')
-        } catch(error) {
-            console.log(error);
         }
+
+        pipelineItems.push(options.output);
+
+        const benchmark = options.benchmark || false;
+
+        return (options?: PipelineOptions) => {
+            return pipeline(benchmark ? bench(pipelineItems) : pipelineItems, options)
+        };
+
     }
 
 }

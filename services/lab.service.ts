@@ -1,18 +1,14 @@
 
-import {Service, ServiceBroker} from "moleculer";
+import { Service as MoleculerService } from "moleculer";
+import { Service } from 'moleculer-decorators';
 import Laboratory from '@moleculer/lab';
 
-
-export default class LabService extends Service {
-	public constructor(public broker: ServiceBroker) {
-		super(broker);
-		this.parseServiceSchema({
-			name: "$lab",
-            mixins: [Laboratory.AgentService],
-            settings: {
-                token: "secret",
-                apiKey: "S0W1HPJ-R7CMHGA-N8WCFGR-V96P8MF"
-            }
-		});
+@Service({
+	name: "$lab",
+	mixins: [Laboratory.AgentService],
+	settings: {
+		token: "secret",
+		apiKey: "S0W1HPJ-R7CMHGA-N8WCFGR-V96P8MF"
 	}
-}
+})
+export default class LabService extends MoleculerService { }

@@ -1,188 +1,12 @@
 
-import { Transform, TransformCallback } from 'stream';
 
-type GenParserStackElement = {[key: string]: any} | string;
-
-class GenParser {
-
-    private started = false;
-    private stack: GenParserStackElement[] = [];
-
-    constructor(private streamingTag: string) {}
-
-    castValue(value: string) {
-
-        const trimmed = value.trim();
-        
-        if (trimmed === 'true') {
-            return true;
-        } else if(trimmed === 'false') {
-            return false;
-        }
-
-        return value;
-
-    }
-
-    produce(type: string, value: string) {
-
-        const [prefix, localname] = value.indexOf(":") !== -1 ? value.split(':') : ['', value];
-        if(localname === this.streamingTag) {
-            if(type === Type.openTag) {
-                this.started = true;
-                
-            } else if(type === Type.closeTag) {
-                this.started = false;
-            }
-            return;
-        }
-        
-        if(!this.started) {
-            return;
-        }
-
-        switch(type) {
-            case Type.openTag: {
-
-                if(this.stack.length === 0) {
-                    this.stack.push({});
-                } else {
-                    const obj = {
-                        $name: localname,
-                    };
-    
-                    this.stack.push(obj);
-                }
-
-                break;
-            }
-            case Type.closeTag: {
-
-                const current = this.stack.pop();
-                const parent = this.stack.at(-1);
-
-                if(parent && typeof parent === 'object') {
-
-                    if(typeof current === 'object') {
-
-                        const {$name, ...rest} = current;
-
-                        let value = null;
-                        if(Object.keys(rest).length === 1 && 'value' in rest) {
-                            value = rest.value;    
-                        } else {
-                            value = rest;
-                        }
-
-                        if(!($name in parent)) {
-                            parent[$name] = value;
-                        } else {
-                            if(Array.isArray(parent[$name])) {
-                                parent[$name].push(value)
-                            } else {
-                                parent[$name] = [parent[$name], value];
-                            }
-                        }
-
-                    } else {
-                        if(parent.value) {
-                            if(!Array.isArray(parent.value)) {
-                                parent.value = [parent.value, current];
-                            } else {
-                                parent.value.push(current);
-                            }
-                        } else {
-                            parent.value = current;
-                        }
-                    }
-                    
-                    if(this.stack.length === 1) {
-                        return this.stack.pop();
-                    }
-                }
-
-                break;
-            }
-            case Type.attributeName: {
-                const current = this.stack.at(-1);
-                if(current && typeof current === 'object') {
-                    current[value] = '';
-                    this.stack.push(value);
-                }
-                break;
-            }
-            case Type.attributeValue: {
-                const current = this.stack.at(-2);
-                if(current && typeof current === 'object') {
-                    const attrName = this.stack.pop();
-                    if(typeof attrName === 'string') {
-                        current[attrName] = value;
-                    }
-                }
-                break;
-            }
-            case Type.text: {
-                const current = this.stack.at(-1);
-                if(current && typeof current === 'object') {
-                    current.value = this.castValue(value);
-                }
-                break;
-            }
-        }
-    }
-    
-}
-
-export default class LexerStream extends Transform {
-
-    private streamingTag: string;
-
-    private stateMachine = new XMLStateMachine();
-    private parser: GenParser;
-
-    constructor(options: { streamingTag?: string }) {
-        super({
-            readableObjectMode: true,
-        });
-
-        if(!options.streamingTag) {
-            throw new Error('options.streamingTag must be provided');
-        }
-
-        this.streamingTag = options.streamingTag;
-        this.parser = new GenParser(this.streamingTag);
-    }
-
-    step(char: string) {
-
-        for (const [type, value] of this.stateMachine.next(char)) {
-            const object = this.parser.produce(type, value);
-            if(object) {
-                this.push(object);
-            }
-        }
-
-    }
-
-    _transform(chunk: string | Buffer, encoding: BufferEncoding, callback: TransformCallback) {
-        
-        if(Buffer.isBuffer(chunk)) {
-            chunk = chunk.toString();
-        }
-
-        for(const char of chunk) {
-            this.step(char);
-        }
-
-        callback();
-
-    }
-
-    _flush(callback: TransformCallback) {
-        callback();
-    }
-
-}
+export const Type = {
+    text: 'text',
+    openTag: 'open-tag',
+    closeTag: 'close-tag',
+    attributeName: 'attribute-name',
+    attributeValue: 'attribute-value',
+};
 
 const States = {
     DATA: 'state-data',
@@ -208,32 +32,23 @@ const Actions = {
     ERROR: 'action-error',
 }
 
-const noop = () => {};
-
-const Type = {
-    text: 'text',
-    openTag: 'open-tag',
-    closeTag: 'close-tag',
-    attributeName: 'attribute-name',
-    attributeValue: 'attribute-value',
-};
-
 const charToAction = {
-    ' ':  Actions.SPACE,
+    ' ': Actions.SPACE,
     '\t': Actions.SPACE,
     '\n': Actions.SPACE,
     '\r': Actions.SPACE,
-    '<':  Actions.LT,
-    '>':  Actions.GT,
-    '"':  Actions.QUOTE,
-    "'":  Actions.QUOTE,
-    '=':  Actions.EQUAL,
-    '/':  Actions.SLASH,
+    '<': Actions.LT,
+    '>': Actions.GT,
+    '"': Actions.QUOTE,
+    "'": Actions.QUOTE,
+    '=': Actions.EQUAL,
+    '/': Actions.SLASH,
 };
 
 const getAction = (char: keyof typeof charToAction | string) => charToAction[char as keyof typeof charToAction] || Actions.CHAR;
+const noop = () => { };
 
-class XMLStateMachine {
+export default class XMLStateMachine {
 
     private state = States.DATA;
     private data = '';
@@ -245,7 +60,7 @@ class XMLStateMachine {
 
     private queue: [string, string][] = [];
 
-    constructor() {}
+    constructor() { }
 
 
     next(char: string) {
@@ -255,13 +70,13 @@ class XMLStateMachine {
         const actions = this.stateMachine[this.state];
         // Call action
         (actions[getAction(char)] || actions[Actions.ERROR] || actions[Actions.CHAR])?.(char);
-        
+
         if (this.tagName[0] === '?' || this.tagName[0] === '!') {
             return [];
         }
 
         return this.queue;
-        
+
     }
 
     // State machine
@@ -404,7 +219,7 @@ class XMLStateMachine {
                 this.attrValue = '';
                 this.state = States.ATTRIBUTE_VALUE;
             },
-            [Actions.GT]: () =>  {
+            [Actions.GT]: () => {
                 this.attrValue = '';
                 this.queue.push([Type.attributeValue, this.attrValue]);
                 this.data = '';
