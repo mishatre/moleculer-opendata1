@@ -6,11 +6,14 @@ import Client from 'ftp';
 import { promisify } from 'util';
 import fs from 'fs';
 import unzip, { Entry } from 'unzip-stream';
-import { Readable } from 'stream';
+import { Readable, PassThrough } from 'stream';
 import { pipeline } from 'stream/promises';
 // @ts-ignore
 import XMLReader from 'xml-reader';
 import LexerStream from '../src/lexer';
+import KTRUParser from '../src/ktru-parser';
+import bench from '../src/bench-stream';
+import ArrayJSONStream from '../src/array-json-stream';
 
 Client.prototype.get = promisify(Client.prototype.get);
 Client.prototype.list = promisify(Client.prototype.list);
@@ -81,7 +84,6 @@ class FTPClient extends Client {
     
 }
 
-
 @Service({
     name: 'zakupki',
     dependencies: [
@@ -117,10 +119,25 @@ export default class ZakupkiService extends MoleculerService {
                 const unzippedStream = fs.createReadStream('./zakupki/nsiKTRU_all_20211009010000_001.xml.zip');
                 // const unzippedStream = await this.broker.call('v1.zip.unzipSingle', inputStream) as Readable;
 
+                const output = fs.createWriteStream('./text.txt');
+
                 pipeline(
-                    unzippedStream,
-                    new LexerStream(),
-                )
+                    // bench(
+                        [
+                            unzippedStream,
+                            new LexerStream({
+                                streamingTag: 'nsiKTRUs',
+                            }),
+                            new KTRUParser(),
+                            new ArrayJSONStream(),
+                            output,
+                        ]
+                    // )
+                ).catch(error => {
+                    console.log(111, error);
+                }).then(() => {
+                    console.log('done');
+                })
 
                 // const reader = XMLReader.create({
                 //     stream: true,

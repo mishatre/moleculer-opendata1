@@ -14,5 +14,6 @@ export default class S3Service extends MoleculerService {
         port: 8333,
         useSSL: false,
         anonymous: true,
+        minioHealthCheckInterval: null,
     }
 };

@@ -32,12 +32,13 @@ export default function bench(items: any[], interval = 1000) {
     let timerId: NodeJS.Timer | null = null;
 
     for(const item of items) {
-        if(items.indexOf(item) === 0) {
-            benchingItems.push(benchifyReadable(item));
-        } else if(items.indexOf(item) === items.length - 1) {
-            benchingItems.push(benchifyWritable(item));
+        const index = items.indexOf(item);
+        if(index === 0) {
+            benchingItems.push(benchifyReadable(item, index));
+        } else if(index === items.length - 1) {
+            benchingItems.push(benchifyWritable(item, index));
         } else {
-            benchingItems.push(benchifyTransform(item));
+            benchingItems.push(benchifyTransform(item, index));
         }
     }
 
@@ -51,58 +52,15 @@ export default function bench(items: any[], interval = 1000) {
         const logItems = [];
 
         for(const item of benchingItems) {
-
-            const bench = item.bench;
-
-            if(bench.isFinished) {
+            const stats = item.bench.getStats();
+            if(item.bench.isFinished) {
                 finishedCount++;
             }
-
-            // if(bench.snapshots.length === 0) {
-            //     continue;
-            // }
-
-            const stats = bench.snapshots.map((value, index, array) => ({
-                waiting: index > 0 ? Number(value.start - array[index - 1].end) / 1e9 : 0,
-                self: Number(value.end - value.start) / 1e9,
-                input: value.input,
-                output: value.output,
-            }));
-
-            const statsSum = stats.reduce((a,b) => {
-                a.self += b.self;
-                a.waiting += b.waiting;
-                a.output += b.output;
-                a.input += b.input;
-                return a;
-            }, { waiting: 0, self: 0, input: 0, output: 0, });
-
-            const statsAvg = {
-                waiting: statsSum.waiting / stats.length,
-                self: statsSum.self / stats.length,
-            }
-
-            const lastChunk = bench.snapshots[bench.snapshots.length - 1];
-
-            const speed = lastChunk ? lastChunk.output / (Number(lastChunk.end - lastChunk.start) / 1e9) : 0;
-            const speedAvg = statsSum.output / statsSum.self;
-
-            logItems.push({
-                'Type': bench.type,
-                'Input delay (avg)': `${(statsAvg.waiting * 1000).toFixed(0)} ms`,
-                'Self time (avg)': `${(statsAvg.self * 1000).toFixed(0)} ms`,
-                'Input': bench.inputObjectMode ? `${statsSum.input} obj` : formatBytes(statsSum.input),
-                'Output': bench.outputObjectMode ? `${statsSum.output} obj` : formatBytes(statsSum.output),
-                'Speed': bench.outputObjectMode ? `${(speed).toFixed(0)} obj/s` : `${formatBytes(speed)}/s`,
-                'Speed (avg)': bench.outputObjectMode ? `${(speedAvg).toFixed(0)} obj/s` : `${formatBytes(speedAvg)}/s`,
-                'Current chunk': bench.snapshots.length,
-                'Finished': bench.isFinished,
-            });
-
+            logItems.push(stats);
         }
         
-        // console.clear();
-        // console.table(logItems);
+        console.clear();
+        console.table(logItems);
 
         if(benchingItems.length === finishedCount && timerId) {
             clearInterval(timerId);
@@ -162,43 +120,101 @@ class Bench extends EventEmitter {
     public isStarted: boolean = false;
     public isFinished: boolean = false;
 
-    public snapshots: any[] = [];
+    public snapshots: Snapshot[] = [];
     private current: any = null;
 
     public inputObjectMode: boolean;
     public outputObjectMode: boolean;
 
+    public hasInput: boolean = false;
+    public hasOutput: boolean = false;
+
     constructor(
+        private index: number,
         private stream: Readable | Writable,
         public type: 'readable' | 'writable' | 'transform'
     ) {
         super();
 
-        if(stream instanceof Readable || stream instanceof Transform) {
-            this.outputObjectMode = stream.readableObjectMode;
-        } else {
-            this.outputObjectMode = false;
-        }
+        this.hasInput = stream instanceof Writable;
+        this.hasOutput = stream instanceof Readable;
 
-        if(stream instanceof Writable || stream instanceof Transform) {
-            this.inputObjectMode = stream.writableObjectMode;
-        } else {
-            this.inputObjectMode = false;
-        }
+        this.inputObjectMode = (this.hasInput && (stream as Writable).writableObjectMode) || false;
+        this.outputObjectMode = (this.hasOutput && (stream as Readable).readableObjectMode) || false;
 
         // stream.on('drain', () => console.log('drain'))
-        stream.on('abort', () => {
-            console.log('abort');
-        });
-        stream.on('error', () => console.log('error'))
-        stream.on('finish', () => console.log('finish'))
-        stream.on('close', () => {
-            this.isFinished = true;
-            console.log('close')
-        })
+        // stream.on('abort', () => {
+        //     console.log('abort');
+        // });
+        // stream.on('error', (error) => console.log('error'))
+        // stream.on('finish', () => console.log('finish'))
+        // stream.on('close', () => {
+        //     this.isFinished = true;
+        //     console.log('close')
+        // })
     }
 
-    nextSnapshot(chunk?: any) {
+    private outNumber(number: bigint) {
+        return Number(number / 1000000n).toFixed(0)
+    }
+
+    public getStats() {
+
+        const statObject = {
+            type: this.type,
+        } as { [key: string]: any };
+
+ 
+        const stats = {
+            waiting: 0n,
+            waitingTotal: 0n,
+            waitingAvg: 0n,
+            self: 0n,
+            selfTotal: 0n,
+            selfAvg: 0n,
+            input: 0,
+            inputTotal: 0,
+            output: 0, 
+            outputTotal: 0,
+            speed: 0,
+            speedAvg: 0,
+        }
+        for(let i = 0; i < this.snapshots.length; i++) {
+
+            const { input, output, start, end } = this.snapshots[i]; 
+
+            stats.waiting = i > 0 ? start - this.snapshots[i - 1].end : 0n;
+            stats.waitingTotal += stats.waiting;
+            stats.self = end - start;
+            stats.selfTotal += stats.self;
+            stats.input = input;
+            stats.inputTotal += stats.input;
+            stats.output = output;
+            stats.outputTotal += stats.output;
+ 
+        }
+
+        stats.waitingAvg = stats.waitingTotal / BigInt(this.snapshots.length);
+        stats.selfAvg = stats.selfTotal / BigInt(this.snapshots.length);
+
+        stats.speed = Number(BigInt(stats.output) * 12500000000n / stats.self) / 10;
+        stats.speedAvg = Number(BigInt(stats.outputTotal) * 12500000000n / stats.selfTotal) / 10;
+
+        statObject['Input delay (avg)'] = this.hasInput ? `${this.outNumber(stats.waitingAvg)} ms` : `-`;
+        statObject['Self time (avg)'] = `${this.outNumber(stats.selfAvg)} ms`;
+        statObject['Self (total)'] = `${this.outNumber(stats.selfTotal)} ms`;
+        statObject['Input'] = this.hasInput ? (this.inputObjectMode ? `${stats.inputTotal} obj` : formatBytes(stats.inputTotal)) : `-`;
+        statObject['Output'] = this.hasOutput ? (this.outputObjectMode ? `${stats.outputTotal} obj` : formatBytes(stats.outputTotal)) : `-`;
+        statObject['Speed'] = this.outputObjectMode ? `${(stats.speed).toFixed(0)} obj/s` : `${formatBytes(stats.speed)}/s`;
+        statObject['Speed (avg)'] = this.outputObjectMode ? `${(stats.speedAvg).toFixed(0)} obj/s` : `${formatBytes(stats.speedAvg)}/s`;
+        statObject['Chunk'] = this.snapshots.length;
+        statObject['Finished'] = this.isFinished;
+
+        return statObject;
+
+    }
+
+    nextSnapshot(chunk?: any, multipleWrite?: boolean) {
         if(!this.isStarted) {
             this.isStarted = true;
             this.emit('started');
@@ -206,12 +222,16 @@ class Bench extends EventEmitter {
         if(this.current !== null) {
             this.snapshots.push(this.current);
         }
+
+        const input = chunk ? ( multipleWrite ? this.getChunksSize(chunk) : this.getChunkSize(chunk) ) : 0;
+
         this.current = {
             start: process.hrtime.bigint(),
-            input: chunk ? this.getChunkSize(chunk, true) : 0,
+            input,
             output: 0,
             end: null,
         }
+
     }
 
     addChunk(chunk: any) {
@@ -233,27 +253,24 @@ class Bench extends EventEmitter {
         this.isFinished = true;
     }
 
-    private getChunkSize(chunk: any, input = true) {
-        if(this.stream instanceof Readable) {
-            if (this.stream.readableObjectMode) {
-                return 1;
-            }
-        } else if(this.stream instanceof Writable) {
-            if (this.stream.writableObjectMode) {
-                return 1;
-            }
+    private getChunksSize(chunks: any): number {
+        if(Array.isArray(chunks)) {
+            const size = chunks.reduce((acc, { chunk }) => acc + this.getChunkSize(chunk), 0) as number;
+            return size;
         }
+        return 1;
+    }
 
-        if(!Buffer.isBuffer(chunk)) {
+    private getChunkSize(chunk: any): number {
 
-            if(typeof chunk === 'object') {
-                return 1;
-            }
-
+        if(typeof chunk === 'string') {
             return Buffer.from(chunk).length;
+        } else if(Buffer.isBuffer(chunk)) {
+            return chunk.length;
+        } else {
+            return 1;
         }
 
-        return chunk.length;
     }
 
 }
@@ -272,15 +289,15 @@ function benchStream(stream: Readable | Writable | Transform) {
         type = 'writable';
     }
 
-    const bench = new Bench(stream, type);
+    const bench = new Bench(0, stream, type);
 
     
 
 }
 
-function benchifyReadable(stream: Readable): BenchReadable {
+function benchifyReadable(stream: Readable, index: number): BenchReadable {
 
-    const bench = new Bench(stream, 'readable');
+    const bench = new Bench(index, stream, 'readable');
 
     const read = stream._read;
     const push = stream.push;
@@ -311,9 +328,9 @@ function benchifyReadable(stream: Readable): BenchReadable {
 
 }
 
-function benchifyTransform(stream: Transform): BenchReadable {
+function benchifyTransform(stream: Transform, index: number): BenchReadable {
 
-    const bench = new Bench(stream, 'transform');
+    const bench = new Bench(index, stream, 'transform');
 
     const push = stream.push;
     const transform = stream._transform;
@@ -321,7 +338,9 @@ function benchifyTransform(stream: Transform): BenchReadable {
     const flush = stream._flush;
 
     stream.push = function(chunk: any, encoding?: BufferEncoding | undefined): boolean {
-        bench.addChunk(chunk);
+        if(chunk !== null) {
+            bench.addChunk(chunk);
+        }
         return push.call(stream, chunk, encoding);
     }
 
@@ -341,6 +360,15 @@ function benchifyTransform(stream: Transform): BenchReadable {
     }
 
     stream._flush = function(callback: TransformCallback) {
+
+        if(!flush) {
+            bench.finished();
+            callback(null, null);
+            return;
+        }
+
+        bench.nextSnapshot();
+
         const cb = (error?: Error | null, data?: any) => {
             if(data) {
                 push.call(stream, data);
@@ -352,7 +380,6 @@ function benchifyTransform(stream: Transform): BenchReadable {
     }
 
     stream._destroy = function(error: Error | null, callback: (error: Error | null, ) => void) {
-        console.log(error);
         return destroy.call(stream, error, callback);
     }
 
@@ -360,8 +387,8 @@ function benchifyTransform(stream: Transform): BenchReadable {
 
 }
 
-function benchifyWritable(stream: Writable): BenchReadable {
-    const bench = new Bench(stream, 'writable');
+function benchifyWritable(stream: Writable, index: number): BenchReadable {
+    const bench = new Bench(index, stream, 'writable');
 
     const write = stream._write;
     const writev = stream._writev;
@@ -383,19 +410,30 @@ function benchifyWritable(stream: Writable): BenchReadable {
 
     stream._writev = function (chunks: Array<{ chunk: any; encoding: BufferEncoding; }>, callback: (error?: Error | null) => void) {
 
-        console.log('Multiple writes');
-        return writev?.call(stream, chunks, callback);
+        bench.nextSnapshot(chunks, true);
+
+        const cb = (error?: Error | null) => {
+            bench.finishChunk();
+            callback(error);
+        }
+
+        return writev?.call(stream, chunks, cb);
 
     }
 
     stream._destroy = function(error: Error | null, callback: (error?: Error | null) => void) {
-        console.log(error);
         return destroy.call(stream, error, callback);
     }
 
     stream._final = function(callback: (error?: Error | null) => void) {
         bench.finished();
-        final.call(stream, callback);
+
+        if(final) {
+            final.call(stream, callback);
+        } else {
+            callback(null);
+        }
+   
     }
 
     return Object.assign(stream, { bench });
