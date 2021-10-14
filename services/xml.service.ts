@@ -47,6 +47,44 @@ export default class XMLService extends MoleculerService {
 
     }
 
+    @Action({
+        name: 'toJS',
+        rest: {
+            method: 'POST',
+            path: 'to/js',
+            // @ts-ignore
+            type: 'stream',
+        },
+        visibility: 'published'
+    })
+    public async toJS(ctx: Context<Readable, { xmlOptions?: XMLParserOptions }>) {
+
+        const output = new PassThrough({ objectMode: true });
+
+        this.XMLToJS(ctx.params, output, ctx.meta.xmlOptions);
+
+        return output;
+
+    }
+
+    @Method
+    private async XMLToJS(input: Readable, output: Writable, xmlOptions?: XMLParserOptions) {
+
+        const xmlPipeline = this.buildXMLPipeline({
+            input,
+            output,
+            xmlOptions,
+            json: false
+        });
+
+        try {
+            await xmlPipeline();
+        } catch (error) {
+            console.log(error);
+        }
+
+    }
+
     @Method
     private async XMLToJSON(input: Readable, output: Writable, xmlOptions?: XMLParserOptions) {
 
@@ -59,7 +97,7 @@ export default class XMLService extends MoleculerService {
 
         try {
             await xmlPipeline();
-        } catch(error) {
+        } catch (error) {
             console.log(error);
         }
 
@@ -86,13 +124,13 @@ export default class XMLService extends MoleculerService {
         return (options?: PipelineOptions) => {
             const args = [];
 
-            if(benchmark) {
-                args.push(bench(pipelineItems));
+            if (benchmark) {
+                args.push(...bench(pipelineItems));
             } else {
-                args.push(pipelineItems);
+                args.push(...pipelineItems);
             }
 
-            if(options) {
+            if (options) {
                 args.push(options);
             }
 

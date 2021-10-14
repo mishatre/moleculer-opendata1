@@ -19,7 +19,7 @@ interface ServiceSettings {
 	name: 'pdf',
 	version: 1,
 	dependencies: [
-		'v1.s3'
+		// 'v1.s3'
 	],
 	settings: {
 		bucketName: 'pdf'
@@ -162,6 +162,7 @@ export default class PdfService extends MoleculerService<ServiceSettings> {
 
 	@Method
 	private async initStorage() {
+		return;
 		const bucketExist = await this.broker.call('v1.s3.bucketExists', {
 			bucketName: this.settings.bucketName,
 		});

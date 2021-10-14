@@ -6,7 +6,7 @@ import { Service } from "moleculer-decorators";
 
 @Service({
     name: 's3',
-    mixins: [MinioMixin],
+    // mixins: [MinioMixin],
     version: 1,
 })
 export default class S3Service extends MoleculerService {

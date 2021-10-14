@@ -122,12 +122,12 @@ export default class ZipService extends MoleculerService {
                 async function* (source: Readable) {
                     for await (const entry of source) {
 
-                        if(options.filename) {
-                            if(entry.type !== 'File' || path.basename(entry.path) !== options.filename) {
+                        if (options.filename) {
+                            if (entry.type !== 'File' || path.basename(entry.path) !== options.filename) {
                                 continue;
                             }
                         }
-                        
+
                         for await (const chunk of entry) {
                             yield chunk;
                         }
@@ -144,13 +144,13 @@ export default class ZipService extends MoleculerService {
 
             const args = [];
 
-            if(benchmark) {
-                args.push(bench(pipelineItems));
+            if (benchmark) {
+                args.push(...bench(pipelineItems));
             } else {
-                args.push(pipelineItems);
+                args.push(...pipelineItems);
             }
 
-            if(options) {
+            if (options) {
                 args.push(options);
             }
 

@@ -24,6 +24,7 @@
     "benchmarkify": "^3.0.0",
     "cbor-x": "^0.8.3",
     "csv-parse": "^4.16.3",
+    "csv-stringify": "^5.6.5",
     "duplexify": "^4.1.2",
     "esbuild": "^0.13.4",
     "fast-xml-parser": "^3.20.3",
