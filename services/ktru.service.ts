@@ -45,6 +45,32 @@ export default class KTRUService extends MoleculerService<ServiceSettings> {
     private connection: FTPClient = new FTPClient();
     private connected: boolean = false;
 
+    @Action({})
+    public async xmlAction(ctx: any) {
+        const input = fs.createReadStream('./word/document.docx');
+
+        const unzippedFile = await this.broker.call('v1.zip.extractFile', input, { 
+            meta: {
+                filename: 'document.xml',
+            }
+        });
+
+        const jsonStream = await this.broker.call('v1.xml.toJSON', unzippedFile, {
+            meta: {
+                xmlOptions: {
+                    ignoreAttrs: true,
+                    streamingTag: 'tr',
+                }
+            }
+        }) as Readable;
+
+        await pipeline(
+            jsonStream,
+            fs.createWriteStream('./word/output.json')
+        );
+
+    }
+
     @Action({
         timeout: 0,
     })
@@ -135,12 +161,12 @@ export default class KTRUService extends MoleculerService<ServiceSettings> {
 
     @Method
     private async initStorage() {
-        const bucketExist = await this.broker.call('s3.bucketExists', {
+        const bucketExist = await this.broker.call('v1.s3.bucketExists', {
             bucketName: this.settings.bucketName,
         });
 
         if (!bucketExist) {
-            await this.broker.call('s3.makeBucket', {
+            await this.broker.call('v1.s3.makeBucket', {
                 bucketName: this.settings.bucketName,
                 region: 'us-east-1',
             });

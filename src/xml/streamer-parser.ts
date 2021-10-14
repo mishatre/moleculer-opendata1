@@ -3,12 +3,23 @@ import { Type } from './state-machine';
 
 type StackElement = { [key: string]: any } | string;
 
+export interface ParserOptions {
+    streamingTag?: string;
+    ignoreAttrs?: boolean;
+}
+
 export default class XMLStreamerParser {
 
+    private streaming = true;
     private started = false;
     private stack: StackElement[] = [];
 
-    constructor(private streamingTag: string) { }
+    constructor(private options: ParserOptions) {
+
+        if(!options.streamingTag) {
+            this.streaming = false;
+        }
+    }
 
     castValue(value: string) {
 
@@ -24,101 +35,116 @@ export default class XMLStreamerParser {
 
     }
 
+    parseTagName(name: string) {
+        return name.indexOf(":") !== -1 ? name.split(':') : ['', name];
+    }
+
     produce(type: string, value: string) {
 
-        const [prefix, localname] = value.indexOf(":") !== -1 ? value.split(':') : ['', value];
-        if (localname === this.streamingTag) {
-            if (type === Type.openTag) {
-                this.started = true;
+        // return type as any
 
-            } else if (type === Type.closeTag) {
-                this.started = false;
+        const [prefix, localname] = this.parseTagName(value);
+
+        if(this.streaming) {
+            // if (type === Type.openTag && this.stack.length === 0) {
+            //     console.log(localname, this.stack.length)
+            // }
+            if (localname === this.options.streamingTag) {
+                if (type === Type.openTag) {
+                    this.started = true;
+                } else if (type === Type.closeTag) {
+                    this.started = false;
+                }
+                return;
             }
-            return;
-        }
 
-        if (!this.started) {
-            return;
+            if (!this.started) {
+                return;
+            }
         }
 
         switch (type) {
             case Type.openTag: {
-
-                if (this.stack.length === 0) {
-                    this.stack.push({});
-                } else {
-                    const obj = {
-                        $name: localname,
-                    };
-
-                    this.stack.push(obj);
-                }
-
+                this.stack.push({
+                    $name: localname,
+                });
                 break;
             }
             case Type.closeTag: {
 
-                const current = this.stack.pop();
+                let tagName = null;
+
+                let current = this.stack.pop();
                 const parent = this.stack.at(-1);
+
+                if(typeof current === 'object') {
+                    const { $name, ...rest } = current;
+                    tagName = $name;
+
+                    // if(Object.keys(rest).length > 0) {
+                        if (Object.keys(rest).length === 1 && 'value' in rest) {
+                            current = rest.value;
+                        } else {
+                            current = rest;
+                        }
+                    // }
+                }
+
+                if(!tagName) {
+                    tagName = 'value';
+                }
 
                 if (parent && typeof parent === 'object') {
 
-                    if (typeof current === 'object') {
+                    // if(typeof current === 'object' && !Array.isArray(current) && Object.keys(current).length === 0) {
+                    //     return;
+                    // }
 
-                        const { $name, ...rest } = current;
-
-                        let value = null;
-                        if (Object.keys(rest).length === 1 && 'value' in rest) {
-                            value = rest.value;
-                        } else {
-                            value = rest;
-                        }
-
-                        if (!($name in parent)) {
-                            parent[$name] = value;
-                        } else {
-                            if (Array.isArray(parent[$name])) {
-                                parent[$name].push(value)
-                            } else {
-                                parent[$name] = [parent[$name], value];
-                            }
-                        }
-
+                    if (!(tagName in parent)) {
+                        parent[tagName] = current;
                     } else {
-                        if (parent.value) {
-                            if (!Array.isArray(parent.value)) {
-                                parent.value = [parent.value, current];
-                            } else {
-                                parent.value.push(current);
-                            }
-                        } else {
-                            parent.value = current;
+                        if (!Array.isArray(parent[tagName])) {
+                            parent[tagName] = [parent[tagName]];
                         }
+                        parent[tagName].push(current);
                     }
 
-                    if (this.stack.length === 1) {
-                        return this.stack.pop();
+                } else {
+                    return {
+                        [tagName]: current
                     }
                 }
 
                 break;
             }
             case Type.attributeName: {
+                if(this.options.ignoreAttrs === true) {
+                    break;
+                }
+                const [prefix, localname] = this.parseTagName(value);
                 const current = this.stack.at(-1);
                 if (current && typeof current === 'object') {
-                    current[value] = '';
-                    this.stack.push(value);
+                    current[localname] = '';
+                    this.stack.push(localname);
                 }
                 break;
             }
             case Type.attributeValue: {
-                const current = this.stack.at(-2);
-                if (current && typeof current === 'object') {
-                    const attrName = this.stack.pop();
-                    if (typeof attrName === 'string') {
+                if(this.options.ignoreAttrs === true) {
+                    break;
+                }
+
+                const attrName = this.stack.pop();
+
+                if(attrName !== undefined && typeof attrName === 'string') {
+                    const current = this.stack.at(-1);
+                    if(!current || typeof current !== 'object') {
+                        throw new Error('There is something terrebly wrong');
+                    } else {
                         current[attrName] = value;
                     }
                 }
+
                 break;
             }
             case Type.text: {

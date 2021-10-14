@@ -1,26 +1,19 @@
 
 import { Transform, TransformCallback } from 'stream';
 import XMLStateMachine, { Type } from './state-machine';
-import XMLStreamerParser from './streamer-parser';
+import XMLStreamerParser, { ParserOptions } from './streamer-parser';
 
 export default class XMLStreamer extends Transform {
-
-    private streamingTag: string;
 
     private stateMachine = new XMLStateMachine();
     private parser: XMLStreamerParser;
 
-    constructor(options: { streamingTag?: string }) {
+    constructor(options: ParserOptions) {
         super({
             readableObjectMode: true,
         });
 
-        if (!options.streamingTag) {
-            throw new Error('options.streamingTag must be provided');
-        }
-
-        this.streamingTag = options.streamingTag;
-        this.parser = new XMLStreamerParser(this.streamingTag);
+        this.parser = new XMLStreamerParser(options);
     }
 
     step(char: string) {

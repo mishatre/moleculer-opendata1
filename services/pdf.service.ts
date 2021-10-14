@@ -22,7 +22,7 @@ interface ServiceSettings {
 		'v1.s3'
 	],
 	settings: {
-		buckerName: 'pdf'
+		bucketName: 'pdf'
 	}
 })
 export default class PdfService extends MoleculerService<ServiceSettings> {
@@ -162,12 +162,12 @@ export default class PdfService extends MoleculerService<ServiceSettings> {
 
 	@Method
 	private async initStorage() {
-		const bucketExist = await this.broker.call('s3.bucketExists', {
+		const bucketExist = await this.broker.call('v1.s3.bucketExists', {
 			bucketName: this.settings.bucketName,
 		});
 
 		if (!bucketExist) {
-			await this.broker.call('s3.makeBucket', {
+			await this.broker.call('v1.s3.makeBucket', {
 				bucketName: this.settings.bucketName,
 				region: 'us-east-1',
 			});
@@ -180,7 +180,7 @@ export default class PdfService extends MoleculerService<ServiceSettings> {
 	}
 
 	public async stopped() {
-		await this.broker.call('s3.removeBucket', {
+		await this.broker.call('v1.s3.removeBucket', {
 			bucketName: this.settings.bucketName,
 			region: 'us-east-1',
 		});

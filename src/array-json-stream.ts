@@ -15,7 +15,7 @@ export default class FlatArrayJSONStream extends Transform {
     public _transform(entry: {[key: string]: any}, encoding: BufferEncoding, cb: TransformCallback) {
 
         const prefix = this.getPrefix();
-        this.push(prefix + JSON.stringify(entry), encoding);
+        this.push(prefix + JSON.stringify(entry, undefined, 4), encoding);
         
         cb();
 
