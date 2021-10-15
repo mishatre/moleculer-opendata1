@@ -6,8 +6,10 @@ import { PipelineOptions } from 'stream';
 import { PassThrough, Readable, Writable } from 'stream';
 import path from 'path';
 import unzip from 'unzip-stream';
+import zip from 'zip-stream';
 import iconvLite from 'iconv-lite';
 import bench from '../src/bench-stream';
+
 
 interface PipelineBuilderOptions {
     input: Readable;
@@ -23,6 +25,20 @@ interface PipelineBuilderOptions {
     version: 1,
 })
 export default class ZipService extends MoleculerService {
+
+    @Action({
+        name: 'compress',
+    })
+    public async compress(ctx: Context<Readable, { filename: string }>) {
+
+        const archive = new zip();
+        archive.entry(ctx.params, { name: ctx.meta.filename }, (err, entry) => {
+            archive.finalize();
+        });
+
+        return archive;
+
+    }
 
     @Action({
         name: 'extractFile',

@@ -97,9 +97,9 @@ export default class XMLStreamerParser {
                 } else {
                     current = current;
                 }
-                if (!Array.isArray(current) && typeof current === 'object' && Object.keys(current).length === 0) {
-                    current = undefined;
-                }
+                // if (!Array.isArray(current) && typeof current === 'object' && Object.keys(current).length === 0) {
+                //     current = undefined;
+                // }
 
             }
 

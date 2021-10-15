@@ -46,7 +46,13 @@ export default class KTRUService extends MoleculerService<ServiceSettings> {
     private connection: FTPClient = new FTPClient();
     private connected: boolean = false;
 
-    @Action({})
+    @Action({
+        rest: {
+            path: 'xmlAction',
+            // @ts-ignore
+            type: 'stream'
+        },
+    })
     public async xmlAction(ctx: any) {
         const input = fs.createReadStream('./word/document.docx');
 
@@ -65,9 +71,11 @@ export default class KTRUService extends MoleculerService<ServiceSettings> {
             }
         }) as Readable;
 
+        const self = this;
+
         await pipeline(
             jsonStream,
-
+            // new ArrayJSONStream(),
             async function* (stream) {
 
                 const table = [];
@@ -76,132 +84,264 @@ export default class KTRUService extends MoleculerService<ServiceSettings> {
 
                     const newRow: any[] = [];
 
-                    row.tc.forEach((row: any) => {
-                        if (!row.p.r?.t) {
-                            console.log(row.p);
-                        }
+                    if(row.tc) {
+                        row.tc.forEach((row: any) => {
 
-                        let p = row.p;
-                        if (!Array.isArray(row.p)) {
-                            p = [row.p];
-                        }
-
-                        const value = p.map(({ r }: any) => {
-
-                            if (!Array.isArray(r)) {
-                                r = [r];
+                            let p = row.p;
+                            if (!Array.isArray(row.p)) {
+                                p = [row.p];
                             }
 
-                            return r.map(({ t }: any) => {
-                                return t;
-                            }).join('');
+                            const value = p.map(({ r }: any) => {
 
-                        }).join('\n');
+                                if (!Array.isArray(r)) {
+                                    r = [r];
+                                }
 
-                        newRow.push(value);
-                    });
+                                return r.map((value: any) => {
+                                    if(value?.t) {
+                                        if(typeof value.t === 'object') {
+                                            return ' ';
+                                        }
+                                        return value.t;
+                                    }
+                                    return '';
+                                }).join('');
 
-                    table.push(newRow);
+                            }).join('##$$');
+
+                            newRow.push(value);
+                        });
+
+                        table.push(newRow);
+                    }
 
                 }
 
-                const finalTable = [];
+                const rawHeader = [];
+                const header = [];
 
                 for (let i = 0; i < table.length; i++) {
                     const row = table[i];
 
-                    const newRow = [];
-
                     if (i === 0) {
+                        console.log(row)
 
                         for (const cell of row) {
-                            switch (cell) {
+                            const value = cell.replaceAll('##$$', '').trim();
+                            switch (value) {
                                 case 'Артикул': {
-                                    newRow.push(cell);
+                                    header.push(value);
+                                    rawHeader.push(value);
                                     break;
                                 }
+                                case 'Каталожный номер': 
                                 case 'Фирменное наименование': {
-                                    newRow.push("Наименование");
+                                    header.push("Наименование");
+                                    rawHeader.push("Наименование");
                                     break;
                                 }
+                                case 'Наименование общее':
                                 case 'Наименование в соответствии с РУ': {
-                                    newRow.push("НаименованиеОбщее");
+                                    header.push("НаименованиеОбщее");
+                                    rawHeader.push("НаименованиеОбщее");
                                     break;
                                 }
                                 case 'Сведения о РУ': {
-                                    newRow.push("НомерРУ");
-                                    newRow.push("ДатаРУ");
-                                    newRow.push("НомерСтрокиРУ");
+                                    rawHeader.push("НомерРУ");
+                                    header.push("НомерРУ");
+                                    header.push("ДатаРУ");
+                                    header.push("НомерСтрокиРУ");
                                     break;
                                 }
+                                case 'Вид МИ': 
                                 case 'Код вида МИ': {
-                                    newRow.push("КодМИ");
+                                    header.push("КодМИ");
+                                    rawHeader.push("КодМИ");
                                     break;
                                 }
+                                case 'КТРУ': 
+                                case 'Код КТРУ':
                                 case 'Код позиции КТРУ': {
-                                    newRow.push("КодКТРУ");
+                                    header.push("КодКТРУ");
+                                    rawHeader.push("КодКТРУ");
                                     break;
                                 }
+                                case 'Описание (если требуется)': {
+                                    header.push("Описание");
+                                    rawHeader.push("Описание");
+                                    break;
+                                }
+                                case 'Технические характеристики':
+                                case 'Доп характеристика ТЕКСТ':
                                 case 'Доп характеристики текст': {
-                                    newRow.push("Текст");
+                                    header.push("Текст");
+                                    rawHeader.push("Текст");
                                     break;
                                 }
                             }
                         }
 
+                        yield header;
+
                     } else {
+
+                        const newRow = [];
+
                         for (let j = 0; j < row.length; j++) {
-                            switch (j) {
-                                case 0: {
-                                    newRow.push(row[j]);
+
+                            const value = (row[j] as string).replaceAll('##$$', '').trim();
+
+                            switch (rawHeader[j]) {
+                                case 'Артикул': {
+                                    newRow.push(value);
                                     break;
                                 }
-                                case 1: {
-                                    newRow.push(row[j]);
+                                case 'Наименование': {
+                                    newRow.push(value);
                                     break;
                                 }
-                                case 2: {
-                                    newRow.push(row[j]);
+                                case 'НаименованиеОбщее': {
+                                    newRow.push(value);
                                     break;
                                 }
-                                case 3: {
+                                case 'НомерРУ': {
                                     // RU
                                     // ФСЗ 2011/09128 от 27.08.2019
                                     const value = row[j] as string;
-                                    newRow.push(value.substring(0, value.length - 14));
-                                    newRow.push(value.substr(-10));
-                                    newRow.push('');
+
+                                    if(value === '' || value === '-' || value === 'нет РУ') {
+                                        newRow.push('', '', '');
+                                        break;
+                                    }
+
+                                    const s = /^(.*?)(?:\s{0,2}от\s{0,2}|\s{0,2})(?:(\d{2}\.\d{2}\.\d{4})\s{0,2}|\s{0,2})(?:п\.\s{0,2}(\d*)|$)/g;
+                                    const result = s.exec(value);
+
+                                    if(result) {
+                                        const [_, number, date, position] = result;
+                                        newRow.push(number);
+                                        newRow.push(date);
+                                        newRow.push(position || '');
+                                    } else {
+                                        newRow.push('', '', '');
+                                    }
+                                    
                                     break;
                                 }
-                                case 4:
-                                case 5: {
+                                case 'КодМИ':
+                                case 'КодКТРУ': {
                                     if (row[j] === '-') {
                                         newRow.push('');
                                     } else {
-                                        newRow.push(row[j]);
+                                        newRow.push(row[j].trim().replaceAll('##$$', ',').replaceAll(',,', ','));
                                     }
                                     break;
                                 }
-                                case 6: {
-                                    newRow.push(row[j]);
+                                case 'Описание': {
+                                    newRow.push(row[j].trim());
+                                    break;
+                                }
+                                case 'Текст': {
+                                    newRow.push(row[j].trim());
                                     break;
                                 }
                             }
                         }
+
+                        yield newRow;
+
                     }
 
-                    yield newRow;
 
                 }
 
+            },
+            // csvstringify({
+            //     delimiter: '\t',
+            //     // quote: '"',
+            //     // quoted_string: true
 
+            // }),
+
+            async function*(stream) {
+
+                yield '<ValueTable xmlns="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">';
+
+                let firstRow = true;
+
+                const headers = [];
+                const rows = [];
+
+                for await(const row of stream) {
+                    // console.log(row)
+                    if(firstRow) {
+                        for(const cell of row) {
+                            headers.push({
+                                name: cell,
+                                type: cell === 'НомерСтрокиРУ' ? 'number' : 'string',
+                                length: 0,
+                            });
+                        }
+                        firstRow = false;
+                    } else {
+                        const rowArr = [];
+                        for(const cell of row) {
+                            const index = row.indexOf(cell);
+                            headers[index].length = Math.max(headers[index].length, cell.length);
+                            rowArr.push(`<Value>${cell}</Value>`)
+                        }
+                        rows.push(`\n\t<row>\n\t\t${rowArr.join('\n\t\t')}\n\t</row>`);
+                    }
+                }
+                const rowsText = rows.join('');
+
+                let headerText = '';
+                for(const cell of headers) {
+                    headerText += 
+`
+    <column>
+        <Name xsi:type="xs:string">${cell.name}</Name>
+        <ValueType>
+            ${cell.type === 'numbre' ? `
+                <Type>xs:decimal</Type>
+                <NumberQualifiers>
+                    <Digits>0</Digits>
+                    <FractionDigits>0</FractionDigits>
+                    <AllowedSign>Any</AllowedSign>
+                </NumberQualifiers>
+            `: `
+                <Type>xs:string</Type>
+                <StringQualifiers>
+                    <Length>${cell.length}</Length>
+                    <AllowedLength>Variable</AllowedLength>
+                </StringQualifiers>
+            `}
+        </ValueType>
+        <Title>${cell.name}</Title>
+        <Width xsi:type="xs:decimal">9</Width>
+    </column>`;
+                }
+
+                yield headerText;
+                yield rowsText;                
+                
+
+                yield '\n</ValueTable>';
 
             },
-            csvstringify({
-                delimiter: '\t',
+            async function* (stream) {
 
-            }),
-            fs.createWriteStream('./word/output.json')
+                const inputStream = Readable.from(stream)
+
+                const zipStream = await self.broker.call('v1.zip.compress', inputStream, { meta: {filename: 'document.xml'} }) as Readable;
+
+                for await (const chunk of zipStream) {
+                    yield chunk;
+                }
+
+            }, 
+            fs.createWriteStream('./word/document.VT_')
         );
 
     }
